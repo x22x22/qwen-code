@@ -18,7 +18,20 @@ import process from 'node:process';
 import { isGitRepository } from '../utils/gitUtils.js';
 import { MemoryTool, GEMINI_CONFIG_DIR } from '../tools/memoryTool.js';
 
-export function getCoreSystemPrompt(userMemory?: string): string {
+export interface ModelTemplateMapping {
+  baseUrls?: string[];
+  modelNames?: string[];
+  template?: string;
+}
+
+export interface SystemPromptConfig {
+  systemPromptMappings?: ModelTemplateMapping[];
+}
+
+export function getCoreSystemPrompt(
+  userMemory?: string,
+  config?: SystemPromptConfig,
+): string {
   // if GEMINI_SYSTEM_MD is set (and not 0|false), override system prompt from file
   // default path is .qwen/system.md but can be modified via custom path in GEMINI_SYSTEM_MD
   let systemMdEnabled = false;
@@ -34,13 +47,49 @@ export function getCoreSystemPrompt(userMemory?: string): string {
       throw new Error(`missing system prompt file '${systemMdPath}'`);
     }
   }
-  if (
-    process.env.OPENAI_MODEL?.startsWith('qwen3') &&
-    process.env.OPENAI_BASE_URL?.includes('dashscope')
-  ) {
-    const sandbox =
-      process.env.SANDBOX === 'sandbox-exec' ? 'sandbox-exec' : '';
-    return `SYSTEM_TEMPLATE:{"name":"qwen3_coder","params":{"is_git_repository":${isGitRepository(process.cwd())},"sandbox":"${sandbox}"}}`;
+
+  // Check for system prompt mappings from global config
+  if (config?.systemPromptMappings) {
+    const currentModel = process.env.OPENAI_MODEL || '';
+    const currentBaseUrl = process.env.OPENAI_BASE_URL || '';
+
+    const matchedMapping = config.systemPromptMappings.find((mapping) => {
+      const { baseUrls, modelNames } = mapping;
+      // Check if baseUrl matches (when specified)
+      if (
+        baseUrls &&
+        modelNames &&
+        baseUrls.includes(currentBaseUrl) &&
+        modelNames.includes(currentModel)
+      ) {
+        return true;
+      }
+
+      if (baseUrls && baseUrls.includes(currentBaseUrl) && !modelNames) {
+        return true;
+      }
+      if (modelNames && modelNames.includes(currentModel) && !baseUrls) {
+        return true;
+      }
+
+      return false;
+    });
+
+    if (matchedMapping?.template) {
+      const sandbox =
+        process.env.SANDBOX === 'sandbox-exec' ? 'sandbox-exec' : '';
+      const isGitRepo = isGitRepository(process.cwd());
+
+      // Replace placeholders in template
+      let template = matchedMapping.template;
+      template = template.replace(
+        '{RUNTIME_VARS_IS_GIT_REPO}',
+        String(isGitRepo),
+      );
+      template = template.replace('{RUNTIME_VARS_SANDBOX}', sandbox);
+
+      return template;
+    }
   }
 
   const basePrompt = systemMdEnabled
