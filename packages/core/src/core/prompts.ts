@@ -91,8 +91,6 @@ export function getCoreSystemPrompt(
     });
 
     if (matchedMapping?.template) {
-      const sandbox =
-        process.env.SANDBOX === 'sandbox-exec' ? 'sandbox-exec' : '';
       const isGitRepo = isGitRepository(process.cwd());
 
       // Replace placeholders in template
@@ -101,7 +99,10 @@ export function getCoreSystemPrompt(
         '{RUNTIME_VARS_IS_GIT_REPO}',
         String(isGitRepo),
       );
-      template = template.replace('{RUNTIME_VARS_SANDBOX}', sandbox);
+      template = template.replace(
+        '{RUNTIME_VARS_SANDBOX}',
+        process.env.SANDBOX || '',
+      );
 
       return template;
     }
