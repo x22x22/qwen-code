@@ -28,6 +28,21 @@ export interface SystemPromptConfig {
   systemPromptMappings?: ModelTemplateMapping[];
 }
 
+/**
+ * Normalizes a URL by removing trailing slash for consistent comparison
+ */
+function normalizeUrl(url: string): string {
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
+/**
+ * Checks if a URL matches any URL in the array, ignoring trailing slashes
+ */
+function urlMatches(urlArray: string[], targetUrl: string): boolean {
+  const normalizedTarget = normalizeUrl(targetUrl);
+  return urlArray.some((url) => normalizeUrl(url) === normalizedTarget);
+}
+
 export function getCoreSystemPrompt(
   userMemory?: string,
   config?: SystemPromptConfig,
@@ -59,13 +74,13 @@ export function getCoreSystemPrompt(
       if (
         baseUrls &&
         modelNames &&
-        baseUrls.includes(currentBaseUrl) &&
+        urlMatches(baseUrls, currentBaseUrl) &&
         modelNames.includes(currentModel)
       ) {
         return true;
       }
 
-      if (baseUrls && baseUrls.includes(currentBaseUrl) && !modelNames) {
+      if (baseUrls && urlMatches(baseUrls, currentBaseUrl) && !modelNames) {
         return true;
       }
       if (modelNames && modelNames.includes(currentModel) && !baseUrls) {
