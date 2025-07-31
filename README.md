@@ -89,6 +89,7 @@ export OPENAI_MODEL="qwen3-coder-plus"
 ```
 
 OpenRouter also provides free Qwen3-Coder model access:
+
 ```bash
 export OPENAI_API_KEY="your_api_key_here"
 export OPENAI_BASE_URL=https://openrouter.ai/api/v1
