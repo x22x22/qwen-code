@@ -31,7 +31,6 @@ export function OpenAIKeyPrompt({
   >('apiKey');
 
   useInput((input, key) => {
-
     // Ignore control sequences like [I or [O from focus switching
     if (input && (input === '[I' || input === '[O')) {
       return;
@@ -147,15 +146,10 @@ export function OpenAIKeyPrompt({
       width="100%"
     >
       <Text bold color={Colors.AccentBlue}>
-        OpenAI Configuration Required
+        API Configuration Required
       </Text>
       <Box marginTop={1}>
-        <Text>
-          Please enter your OpenAI configuration. You can get an API key from{' '}
-          <Text color={Colors.AccentBlue}>
-            https://platform.openai.com/api-keys
-          </Text>
-        </Text>
+        <Text>Please enter your API configuration.</Text>
       </Box>
       <Box marginTop={1} flexDirection="row">
         <Box width={12}>
