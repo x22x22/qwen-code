@@ -18,7 +18,18 @@ import {
 } from '../core/contentGenerator.js';
 import { GeminiClient } from '../core/client.js';
 import { GitService } from '../services/gitService.js';
-import { IdeClient } from '../ide/ide-client.js';
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    existsSync: vi.fn().mockReturnValue(true),
+    statSync: vi.fn().mockReturnValue({
+      isDirectory: vi.fn().mockReturnValue(true),
+    }),
+    realpathSync: vi.fn((path) => path),
+  };
+});
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
@@ -60,8 +71,8 @@ vi.mock('../tools/read-many-files');
 vi.mock('../tools/memoryTool', () => ({
   MemoryTool: vi.fn(),
   setGeminiMdFilename: vi.fn(),
-  getCurrentGeminiMdFilename: vi.fn(() => 'GEMINI.md'), // Mock the original filename
-  DEFAULT_CONTEXT_FILENAME: 'GEMINI.md',
+  getCurrentGeminiMdFilename: vi.fn(() => 'QWEN.md'), // Mock the original filename
+  DEFAULT_CONTEXT_FILENAME: 'QWEN.md',
   GEMINI_CONFIG_DIR: '.gemini',
 }));
 
@@ -120,7 +131,6 @@ describe('Server Config (config.ts)', () => {
     telemetry: TELEMETRY_SETTINGS,
     sessionId: SESSION_ID,
     model: MODEL,
-    ideClient: IdeClient.getInstance(false),
   };
 
   beforeEach(() => {

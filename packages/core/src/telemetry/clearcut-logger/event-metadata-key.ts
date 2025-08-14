@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Defines valid event metadata keys for Clearcut logging.
+// Defines valid event metadata keys for Qwen logging.
 export enum EventMetadataKey {
   GEMINI_CLI_KEY_UNKNOWN = 0,
 
@@ -190,6 +190,13 @@ export enum EventMetadataKey {
 
   // Logs the model that produced the malformed JSON response.
   GEMINI_CLI_MALFORMED_JSON_RESPONSE_MODEL = 45,
+
+  // ==========================================================================
+  // IDE Connection Event Keys
+  // ===========================================================================
+
+  // Logs the type of the IDE connection.
+  GEMINI_CLI_IDE_CONNECTION_TYPE = 46,
 }
 
 export function getEventMetadataKey(
