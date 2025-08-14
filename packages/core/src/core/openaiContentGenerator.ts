@@ -351,7 +351,6 @@ export class OpenAIContentGenerator implements ContentGenerator {
         );
       }
 
-
       // console.log('createParams', createParams);
 
       const stream = (await this.client.chat.completions.create(
@@ -1308,7 +1307,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
             parts.push({
               functionCall: {
-                id: accumulatedCall.id || `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+                id:
+                  accumulatedCall.id ||
+                  `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
                 name: accumulatedCall.name,
                 args,
               },
