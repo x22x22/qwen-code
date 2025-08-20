@@ -1283,7 +1283,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
             // Check if we already have a complete JSON object
             const currentArgs = accumulatedCall.arguments;
             const newArgs = toolCall.function.arguments;
-            
+
             // If current arguments already form a complete JSON and new arguments start a new object,
             // this indicates a new tool call with the same name
             let shouldReset = false;
@@ -1297,7 +1297,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
                 // Current arguments are not complete JSON, continue accumulating
               }
             }
-            
+
             if (shouldReset) {
               accumulatedCall.arguments = newArgs;
             } else {
