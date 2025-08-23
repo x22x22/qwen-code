@@ -1251,8 +1251,6 @@ export class OpenAIContentGenerator implements ContentGenerator {
       if (choice.delta?.content) {
         if (typeof choice.delta.content === 'string') {
           parts.push({ text: choice.delta.content });
-        } else {
-          parts.push({ text: choice.delta.content });
         }
       }
 
