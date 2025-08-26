@@ -8,7 +8,6 @@ import { ToolConfirmationOutcome } from '@qwen-code/qwen-code-core';
 import { Box, Text } from 'ink';
 import React from 'react';
 import { Colors } from '../colors.js';
-import { useKeypress } from '../hooks/useKeypress.js';
 import {
   RadioButtonSelect,
   RadioSelectItem,
@@ -31,15 +30,6 @@ export const ShellConfirmationDialog: React.FC<
 > = ({ request }) => {
   const { commands, onConfirm } = request;
 
-  useKeypress(
-    (key) => {
-      if (key.name === 'escape') {
-        onConfirm(ToolConfirmationOutcome.Cancel);
-      }
-    },
-    { isActive: true },
-  );
-
   const handleSelect = (item: ToolConfirmationOutcome) => {
     if (item === ToolConfirmationOutcome.Cancel) {
       onConfirm(item);
@@ -48,6 +38,10 @@ export const ShellConfirmationDialog: React.FC<
       // commands that were requested.
       onConfirm(item, commands);
     }
+  };
+
+  const handleEscape = () => {
+    onConfirm(ToolConfirmationOutcome.Cancel);
   };
 
   const options: Array<RadioSelectItem<ToolConfirmationOutcome>> = [
@@ -96,7 +90,12 @@ export const ShellConfirmationDialog: React.FC<
         <Text>Do you want to proceed?</Text>
       </Box>
 
-      <RadioButtonSelect items={options} onSelect={handleSelect} isFocused />
+      <RadioButtonSelect 
+        items={options} 
+        onSelect={handleSelect} 
+        onEscape={handleEscape}
+        isFocused 
+      />
     </Box>
   );
 };

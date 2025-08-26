@@ -34,6 +34,10 @@ export interface RadioButtonSelectProps<T> {
   onSelect: (value: T) => void;
   /** Function called when an item is highlighted. Receives the `value` of the selected item. */
   onHighlight?: (value: T) => void;
+  /** Function called when escape key is pressed. */
+  onEscape?: () => void;
+  /** Function called when Ctrl+C is pressed. */
+  onCancel?: () => void;
   /** Whether this select input is currently focused and should respond to input. */
   isFocused?: boolean;
   /** Whether to show the scroll arrows. */
@@ -55,6 +59,8 @@ export function RadioButtonSelect<T>({
   initialIndex = 0,
   onSelect,
   onHighlight,
+  onEscape,
+  onCancel,
   isFocused,
   showScrollArrows = false,
   maxItemsToShow = 10,
@@ -90,6 +96,18 @@ export function RadioButtonSelect<T>({
     (key) => {
       const { sequence, name } = key;
       const isNumeric = showNumbers && /^[0-9]$/.test(sequence);
+
+      // Handle escape key
+      if (name === 'escape') {
+        onEscape?.();
+        return;
+      }
+
+      // Handle Ctrl+C
+      if (key.ctrl && name === 'c') {
+        onCancel?.();
+        return;
+      }
 
       // Any key press that is not a digit should clear the number input buffer.
       if (!isNumeric && numberInputTimer.current) {

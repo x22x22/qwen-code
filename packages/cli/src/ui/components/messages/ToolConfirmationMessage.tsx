@@ -20,7 +20,6 @@ import {
   RadioSelectItem,
 } from '../shared/RadioButtonSelect.js';
 import { MaxSizedBox } from '../shared/MaxSizedBox.js';
-import { useKeypress } from '../../hooks/useKeypress.js';
 
 export interface ToolConfirmationMessageProps {
   confirmationDetails: ToolCallConfirmationDetails;
@@ -57,17 +56,10 @@ export const ToolConfirmationMessage: React.FC<
     onConfirm(outcome);
   };
 
-  useKeypress(
-    (key) => {
-      if (!isFocused) return;
-      if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
-        handleConfirm(ToolConfirmationOutcome.Cancel);
-      }
-    },
-    { isActive: isFocused },
-  );
-
   const handleSelect = (item: ToolConfirmationOutcome) => handleConfirm(item);
+
+  const handleEscape = () => handleConfirm(ToolConfirmationOutcome.Cancel);
+  const handleCancel = () => handleConfirm(ToolConfirmationOutcome.Cancel);
 
   let bodyContent: React.ReactNode | null = null; // Removed contextDisplay here
   let question: string;
@@ -283,6 +275,8 @@ export const ToolConfirmationMessage: React.FC<
         <RadioButtonSelect
           items={options}
           onSelect={handleSelect}
+          onEscape={handleEscape}
+          onCancel={handleCancel}
           isFocused={isFocused}
         />
       </Box>
