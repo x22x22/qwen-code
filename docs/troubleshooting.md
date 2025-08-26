@@ -69,6 +69,11 @@ This guide provides solutions to common issues and debugging tips, including top
   - **Cause:** The `is-in-ci` package checks for the presence of `CI`, `CONTINUOUS_INTEGRATION`, or any environment variable with a `CI_` prefix. When any of these are found, it signals that the environment is non-interactive, which prevents the CLI from starting in its interactive mode.
   - **Solution:** If the `CI_` prefixed variable is not needed for the CLI to function, you can temporarily unset it for the command. e.g., `env -u CI_TOKEN qwen`
 
+- **CLI becomes unresponsive during interactive selection dialogs**
+  - **Issue:** When encountering selection dialogs with numbered options (such as shell command confirmation dialogs), the CLI appears "frozen" and does not respond to keyboard input.
+  - **Cause:** This was caused by multiple keyboard input handlers (`useKeypress` hooks) being active simultaneously, creating conflicts in terminal raw mode control.
+  - **Solution:** This issue has been fixed in recent versions. The keyboard input handling has been consolidated to prevent conflicts. If you encounter this issue, ensure you're using the latest version of Qwen Code.
+
 - **DEBUG mode not working from project .env file**
   - **Issue:** Setting `DEBUG=true` in a project's `.env` file doesn't enable debug mode for the CLI.
   - **Cause:** The `DEBUG` and `DEBUG_MODE` variables are automatically excluded from project `.env` files to prevent interference with the CLI behavior.
