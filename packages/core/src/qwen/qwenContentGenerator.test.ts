@@ -22,7 +22,7 @@ import {
 import { QwenContentGenerator } from './qwenContentGenerator.js';
 import { SharedTokenManager } from './sharedTokenManager.js';
 import { Config } from '../config/config.js';
-import { AuthType, ContentGeneratorConfig } from '../core/contentGenerator.js';
+import { AuthType } from '../core/contentGenerator.js';
 
 // Mock SharedTokenManager
 vi.mock('./sharedTokenManager.js', () => ({
@@ -132,20 +132,21 @@ vi.mock('./sharedTokenManager.js', () => ({
 }));
 
 // Mock the OpenAIContentGenerator parent class
-vi.mock('../core/openaiContentGenerator.js', () => ({
+vi.mock('../core/refactor/openaiContentGenerator.js', () => ({
   OpenAIContentGenerator: class {
-    client: {
-      apiKey: string;
-      baseURL: string;
+    pipeline: {
+      client: {
+        apiKey: string;
+        baseURL: string;
+      };
     };
 
-    constructor(
-      contentGeneratorConfig: ContentGeneratorConfig,
-      _config: Config,
-    ) {
-      this.client = {
-        apiKey: contentGeneratorConfig.apiKey || 'test-key',
-        baseURL: contentGeneratorConfig.baseUrl || 'https://api.openai.com/v1',
+    constructor(_config: Config, _provider: unknown) {
+      this.pipeline = {
+        client: {
+          apiKey: 'test-key',
+          baseURL: 'https://api.openai.com/v1',
+        },
       };
     }
 
@@ -220,7 +221,10 @@ describe('QwenContentGenerator', () => {
     // Mock Config
     mockConfig = {
       getContentGeneratorConfig: vi.fn().mockReturnValue({
+        model: 'qwen-turbo',
+        apiKey: 'test-api-key',
         authType: 'qwen',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
         enableOpenAILogging: false,
         timeout: 120000,
         maxRetries: 3,
@@ -230,6 +234,9 @@ describe('QwenContentGenerator', () => {
           top_p: 0.9,
         },
       }),
+      getCliVersion: vi.fn().mockReturnValue('1.0.0'),
+      getSessionId: vi.fn().mockReturnValue('test-session-id'),
+      getUsageStatisticsEnabled: vi.fn().mockReturnValue(false),
     } as unknown as Config;
 
     // Mock QwenOAuth2Client
@@ -245,7 +252,11 @@ describe('QwenContentGenerator', () => {
     // Create QwenContentGenerator instance
     const contentGeneratorConfig = {
       model: 'qwen-turbo',
+      apiKey: 'test-api-key',
       authType: AuthType.QWEN_OAUTH,
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      timeout: 120000,
+      maxRetries: 3,
     };
     qwenContentGenerator = new QwenContentGenerator(
       mockQwenClient,
