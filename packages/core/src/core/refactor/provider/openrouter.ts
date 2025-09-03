@@ -1,21 +1,13 @@
-import OpenAI from 'openai';
 import { Config } from '../../../config/config.js';
 import { ContentGeneratorConfig } from '../../contentGenerator.js';
-import { DEFAULT_TIMEOUT, DEFAULT_MAX_RETRIES } from '../constants.js';
-import { OpenAICompatibleProvider } from './types.js';
+import { DefaultOpenAICompatibleProvider } from './default.js';
 
-export class OpenRouterOpenAICompatibleProvider
-  implements OpenAICompatibleProvider
-{
-  private contentGeneratorConfig: ContentGeneratorConfig;
-  private cliConfig: Config;
-
+export class OpenRouterOpenAICompatibleProvider extends DefaultOpenAICompatibleProvider {
   constructor(
     contentGeneratorConfig: ContentGeneratorConfig,
     cliConfig: Config,
   ) {
-    this.cliConfig = cliConfig;
-    this.contentGeneratorConfig = contentGeneratorConfig;
+    super(contentGeneratorConfig, cliConfig);
   }
 
   static isOpenRouterProvider(
@@ -25,40 +17,15 @@ export class OpenRouterOpenAICompatibleProvider
     return baseURL.includes('openrouter.ai');
   }
 
-  buildHeaders(): Record<string, string | undefined> {
-    const version = this.cliConfig.getCliVersion() || 'unknown';
-    const userAgent = `QwenCode/${version} (${process.platform}; ${process.arch})`;
+  override buildHeaders(): Record<string, string | undefined> {
+    // Get base headers from parent class
+    const baseHeaders = super.buildHeaders();
+
+    // Add OpenRouter-specific headers
     return {
-      'User-Agent': userAgent,
+      ...baseHeaders,
       'HTTP-Referer': 'https://github.com/QwenLM/qwen-code.git',
       'X-Title': 'Qwen Code',
-    };
-  }
-
-  buildClient(): OpenAI {
-    const {
-      apiKey,
-      baseUrl,
-      timeout = DEFAULT_TIMEOUT,
-      maxRetries = DEFAULT_MAX_RETRIES,
-    } = this.contentGeneratorConfig;
-    const defaultHeaders = this.buildHeaders();
-    return new OpenAI({
-      apiKey,
-      baseURL: baseUrl,
-      timeout,
-      maxRetries,
-      defaultHeaders,
-    });
-  }
-
-  buildRequest(
-    request: OpenAI.Chat.ChatCompletionCreateParams,
-    _userPromptId: string,
-  ): OpenAI.Chat.ChatCompletionCreateParams {
-    // OpenRouter doesn't need special enhancements, just pass through all parameters
-    return {
-      ...request, // Preserve all original parameters including sampling params
     };
   }
 }

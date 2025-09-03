@@ -8,18 +8,13 @@ import OpenAI from 'openai';
 import {
   GenerateContentParameters,
   GenerateContentResponse,
-  CountTokensParameters,
-  CountTokensResponse,
-  EmbedContentParameters,
-  EmbedContentResponse,
 } from '@google/genai';
 import { Config } from '../../config/config.js';
 import { ContentGeneratorConfig } from '../contentGenerator.js';
 import { type OpenAICompatibleProvider } from './provider/index.js';
-import { Converter } from './converter.js';
+import { OpenAIContentConverter } from './converter.js';
 import { TelemetryService, RequestContext } from './telemetryService.js';
 import { ErrorHandler } from './errorHandler.js';
-import { StreamingManager } from './streamingManager.js';
 
 export interface PipelineConfig {
   cliConfig: Config;
@@ -31,15 +26,15 @@ export interface PipelineConfig {
 
 export class ContentGenerationPipeline {
   client: OpenAI;
-  private converter: Converter;
-  private streamingManager: StreamingManager;
+  private converter: OpenAIContentConverter;
   private contentGeneratorConfig: ContentGeneratorConfig;
 
   constructor(private config: PipelineConfig) {
     this.contentGeneratorConfig = config.contentGeneratorConfig;
     this.client = this.config.provider.buildClient();
-    this.converter = new Converter(this.contentGeneratorConfig.model);
-    this.streamingManager = new StreamingManager(this.converter);
+    this.converter = new OpenAIContentConverter(
+      this.contentGeneratorConfig.model,
+    );
   }
 
   async execute(
@@ -80,15 +75,14 @@ export class ContentGenerationPipeline {
       userPromptId,
       true,
       async (openaiRequest, context) => {
+        // Stage 1: Create OpenAI stream
         const stream = (await this.client.chat.completions.create(
           openaiRequest,
         )) as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>;
 
-        const originalStream = this.streamingManager.processStream(stream);
-
-        // Create a logging stream decorator that handles collection and logging
-        return this.createLoggingStream(
-          originalStream,
+        // Stage 2: Process stream with conversion and logging
+        return this.processStreamWithLogging(
+          stream,
           context,
           openaiRequest,
           request,
@@ -97,85 +91,68 @@ export class ContentGenerationPipeline {
     );
   }
 
-  async countTokens(
-    request: CountTokensParameters,
-  ): Promise<CountTokensResponse> {
-    // Use tiktoken for accurate token counting
-    const content = JSON.stringify(request.contents);
-    let totalTokens = 0;
+  /**
+   * Stage 2: Process OpenAI stream with conversion and logging
+   * This method handles the complete stream processing pipeline:
+   * 1. Convert OpenAI chunks to Gemini format while preserving original chunks
+   * 2. Filter empty responses
+   * 3. Collect both formats for logging
+   * 4. Handle success/error logging with original OpenAI format
+   */
+  private async *processStreamWithLogging(
+    stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
+    context: RequestContext,
+    openaiRequest: OpenAI.Chat.ChatCompletionCreateParams,
+    request: GenerateContentParameters,
+  ): AsyncGenerator<GenerateContentResponse> {
+    const collectedGeminiResponses: GenerateContentResponse[] = [];
+    const collectedOpenAIChunks: OpenAI.Chat.ChatCompletionChunk[] = [];
+
+    // Reset streaming tool calls to prevent data pollution from previous streams
+    this.converter.resetStreamingToolCalls();
 
     try {
-      const { get_encoding } = await import('tiktoken');
-      const encoding = get_encoding('cl100k_base'); // GPT-4 encoding, but estimate for qwen
-      totalTokens = encoding.encode(content).length;
-      encoding.free();
-    } catch (error) {
-      console.warn(
-        'Failed to load tiktoken, falling back to character approximation:',
-        error,
-      );
-      // Fallback: rough approximation using character count
-      totalTokens = Math.ceil(content.length / 4); // Rough estimate: 1 token ≈ 4 characters
-    }
+      // Stage 2a: Convert and yield each chunk while preserving original
+      for await (const chunk of stream) {
+        const response = this.converter.convertOpenAIChunkToGemini(chunk);
 
-    return {
-      totalTokens,
-    };
-  }
+        // Stage 2b: Filter empty responses to avoid downstream issues
+        if (
+          response.candidates?.[0]?.content?.parts?.length === 0 &&
+          !response.usageMetadata
+        ) {
+          continue;
+        }
 
-  async embedContent(
-    request: EmbedContentParameters,
-  ): Promise<EmbedContentResponse> {
-    // Extract text from contents
-    let text = '';
-    if (Array.isArray(request.contents)) {
-      text = request.contents
-        .map((content) => {
-          if (typeof content === 'string') return content;
-          if ('parts' in content && content.parts) {
-            return content.parts
-              .map((part) =>
-                typeof part === 'string'
-                  ? part
-                  : 'text' in part
-                    ? (part as { text?: string }).text || ''
-                    : '',
-              )
-              .join(' ');
-          }
-          return '';
-        })
-        .join(' ');
-    } else if (request.contents) {
-      if (typeof request.contents === 'string') {
-        text = request.contents;
-      } else if ('parts' in request.contents && request.contents.parts) {
-        text = request.contents.parts
-          .map((part) =>
-            typeof part === 'string' ? part : 'text' in part ? part.text : '',
-          )
-          .join(' ');
+        // Stage 2c: Collect both formats and yield Gemini format to consumer
+        collectedGeminiResponses.push(response);
+        collectedOpenAIChunks.push(chunk);
+        yield response;
       }
-    }
 
-    try {
-      const embedding = await this.client.embeddings.create({
-        model: 'text-embedding-ada-002', // Default embedding model
-        input: text,
-      });
+      // Stage 2d: Stream completed successfully - perform logging with original OpenAI chunks
+      context.duration = Date.now() - context.startTime;
 
-      return {
-        embeddings: [
-          {
-            values: embedding.data[0].embedding,
-          },
-        ],
-      };
-    } catch (error) {
-      console.error('OpenAI API Embedding Error:', error);
-      throw new Error(
-        `OpenAI API error: ${error instanceof Error ? error.message : String(error)}`,
+      await this.config.telemetryService.logStreamingSuccess(
+        context,
+        collectedGeminiResponses,
+        openaiRequest,
+        collectedOpenAIChunks,
       );
+    } catch (error) {
+      // Stage 2e: Stream failed - handle error and logging
+      context.duration = Date.now() - context.startTime;
+
+      // Clear streaming tool calls on error to prevent data pollution
+      this.converter.resetStreamingToolCalls();
+
+      await this.config.telemetryService.logError(
+        context,
+        error,
+        openaiRequest,
+      );
+
+      this.config.errorHandler.handle(error, context, request);
     }
   }
 
@@ -265,55 +242,6 @@ export class ContentGenerationPipeline {
     };
 
     return params;
-  }
-
-  /**
-   * Creates a stream decorator that collects responses and handles logging
-   */
-  private async *createLoggingStream(
-    originalStream: AsyncGenerator<GenerateContentResponse>,
-    context: RequestContext,
-    openaiRequest: OpenAI.Chat.ChatCompletionCreateParams,
-    request: GenerateContentParameters,
-  ): AsyncGenerator<GenerateContentResponse> {
-    const responses: GenerateContentResponse[] = [];
-
-    try {
-      // Yield all responses while collecting them
-      for await (const response of originalStream) {
-        responses.push(response);
-        yield response;
-      }
-
-      // Stream completed successfully - perform logging
-      context.duration = Date.now() - context.startTime;
-
-      const combinedResponse =
-        this.streamingManager.combineStreamResponsesForLogging(
-          responses,
-          this.contentGeneratorConfig.model,
-        );
-      const openaiResponse =
-        this.converter.convertGeminiResponseToOpenAI(combinedResponse);
-
-      await this.config.telemetryService.logStreamingSuccess(
-        context,
-        responses,
-        openaiRequest,
-        openaiResponse,
-      );
-    } catch (error) {
-      // Stream failed - handle error and logging
-      context.duration = Date.now() - context.startTime;
-
-      await this.config.telemetryService.logError(
-        context,
-        error,
-        openaiRequest,
-      );
-
-      this.config.errorHandler.handle(error, context, request);
-    }
   }
 
   /**

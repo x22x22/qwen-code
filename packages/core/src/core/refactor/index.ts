@@ -17,22 +17,17 @@ import {
   DefaultOpenAICompatibleProvider,
 } from './provider/index.js';
 
-// Main classes
 export { OpenAIContentGenerator } from './openaiContentGenerator.js';
 export { ContentGenerationPipeline, type PipelineConfig } from './pipeline.js';
 
-// Providers
 export {
   type OpenAICompatibleProvider,
   DashScopeOpenAICompatibleProvider,
   OpenRouterOpenAICompatibleProvider,
 } from './provider/index.js';
 
-// Utilities
-export { Converter } from './converter.js';
-export { StreamingManager } from './streamingManager.js';
+export { OpenAIContentConverter } from './converter.js';
 
-// Factory utility functions
 /**
  * Create an OpenAI-compatible content generator with the appropriate provider
  */
