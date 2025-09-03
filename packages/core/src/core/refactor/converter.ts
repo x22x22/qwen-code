@@ -15,26 +15,57 @@ import {
   CallableTool,
   FunctionCall,
   FunctionResponse,
+  ContentListUnion,
+  ContentUnion,
+  PartUnion,
 } from '@google/genai';
 import OpenAI from 'openai';
 import { safeJsonParse } from '../../utils/safeJsonParse.js';
+import { StreamingToolCallParser } from './streamingToolCallParser.js';
+
+/**
+ * Tool call accumulator for streaming responses
+ */
+export interface ToolCallAccumulator {
+  id?: string;
+  name?: string;
+  arguments: string;
+}
+
+/**
+ * Parsed parts from Gemini content, categorized by type
+ */
+interface ParsedParts {
+  textParts: string[];
+  functionCalls: FunctionCall[];
+  functionResponses: FunctionResponse[];
+  mediaParts: Array<{
+    type: 'image' | 'audio' | 'file';
+    data: string;
+    mimeType: string;
+    fileUri?: string;
+  }>;
+}
 
 /**
  * Converter class for transforming data between Gemini and OpenAI formats
  */
-export class Converter {
+export class OpenAIContentConverter {
   private model: string;
-  private streamingToolCalls: Map<
-    number,
-    {
-      id?: string;
-      name?: string;
-      arguments: string;
-    }
-  > = new Map();
+  private streamingToolCallParser: StreamingToolCallParser =
+    new StreamingToolCallParser();
 
   constructor(model: string) {
     this.model = model;
+  }
+
+  /**
+   * Reset streaming tool calls parser for new stream processing
+   * This should be called at the beginning of each stream to prevent
+   * data pollution from previous incomplete streams
+   */
+  resetStreamingToolCalls(): void {
+    this.streamingToolCallParser.reset();
   }
 
   /**
@@ -173,132 +204,10 @@ export class Converter {
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
     // Handle system instruction from config
-    if (request.config?.systemInstruction) {
-      const systemInstruction = request.config.systemInstruction;
-      let systemText = '';
-
-      if (Array.isArray(systemInstruction)) {
-        systemText = systemInstruction
-          .map((content) => {
-            if (typeof content === 'string') return content;
-            if ('parts' in content) {
-              const contentObj = content as Content;
-              return (
-                contentObj.parts
-                  ?.map((p: Part) =>
-                    typeof p === 'string' ? p : 'text' in p ? p.text : '',
-                  )
-                  .join('\n') || ''
-              );
-            }
-            return '';
-          })
-          .join('\n');
-      } else if (typeof systemInstruction === 'string') {
-        systemText = systemInstruction;
-      } else if (
-        typeof systemInstruction === 'object' &&
-        'parts' in systemInstruction
-      ) {
-        const systemContent = systemInstruction as Content;
-        systemText =
-          systemContent.parts
-            ?.map((p: Part) =>
-              typeof p === 'string' ? p : 'text' in p ? p.text : '',
-            )
-            .join('\n') || '';
-      }
-
-      if (systemText) {
-        messages.push({
-          role: 'system' as const,
-          content: systemText,
-        });
-      }
-    }
+    this.addSystemInstructionMessage(request, messages);
 
     // Handle contents
-    if (Array.isArray(request.contents)) {
-      for (const content of request.contents) {
-        if (typeof content === 'string') {
-          messages.push({ role: 'user' as const, content });
-        } else if ('role' in content && 'parts' in content) {
-          // Check if this content has function calls or responses
-          const functionCalls: FunctionCall[] = [];
-          const functionResponses: FunctionResponse[] = [];
-          const textParts: string[] = [];
-
-          for (const part of content.parts || []) {
-            if (typeof part === 'string') {
-              textParts.push(part);
-            } else if ('text' in part && part.text) {
-              textParts.push(part.text);
-            } else if ('functionCall' in part && part.functionCall) {
-              functionCalls.push(part.functionCall);
-            } else if ('functionResponse' in part && part.functionResponse) {
-              functionResponses.push(part.functionResponse);
-            }
-          }
-
-          // Handle function responses (tool results)
-          if (functionResponses.length > 0) {
-            for (const funcResponse of functionResponses) {
-              messages.push({
-                role: 'tool' as const,
-                tool_call_id: funcResponse.id || '',
-                content:
-                  typeof funcResponse.response === 'string'
-                    ? funcResponse.response
-                    : JSON.stringify(funcResponse.response),
-              });
-            }
-          }
-          // Handle model messages with function calls
-          else if (content.role === 'model' && functionCalls.length > 0) {
-            const toolCalls = functionCalls.map((fc, index) => ({
-              id: fc.id || `call_${index}`,
-              type: 'function' as const,
-              function: {
-                name: fc.name || '',
-                arguments: JSON.stringify(fc.args || {}),
-              },
-            }));
-
-            messages.push({
-              role: 'assistant' as const,
-              content: textParts.join('') || null,
-              tool_calls: toolCalls,
-            });
-          }
-          // Handle regular text messages
-          else {
-            const role =
-              content.role === 'model'
-                ? ('assistant' as const)
-                : ('user' as const);
-            const text = textParts.join('');
-            if (text) {
-              messages.push({ role, content: text });
-            }
-          }
-        }
-      }
-    } else if (request.contents) {
-      if (typeof request.contents === 'string') {
-        messages.push({ role: 'user' as const, content: request.contents });
-      } else if ('role' in request.contents && 'parts' in request.contents) {
-        const content = request.contents;
-        const role =
-          content.role === 'model' ? ('assistant' as const) : ('user' as const);
-        const text =
-          content.parts
-            ?.map((p: Part) =>
-              typeof p === 'string' ? p : 'text' in p ? p.text : '',
-            )
-            .join('\n') || '';
-        messages.push({ role, content: text });
-      }
-    }
+    this.processContents(request.contents, messages);
 
     // Clean up orphaned tool calls and merge consecutive assistant messages
     const cleanedMessages = this.cleanOrphanedToolCalls(messages);
@@ -306,6 +215,285 @@ export class Converter {
       this.mergeConsecutiveAssistantMessages(cleanedMessages);
 
     return mergedMessages;
+  }
+
+  /**
+   * Extract and add system instruction message from request config
+   */
+  private addSystemInstructionMessage(
+    request: GenerateContentParameters,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): void {
+    if (!request.config?.systemInstruction) return;
+
+    const systemText = this.extractTextFromContentUnion(
+      request.config.systemInstruction,
+    );
+
+    if (systemText) {
+      messages.push({
+        role: 'system' as const,
+        content: systemText,
+      });
+    }
+  }
+
+  /**
+   * Process contents and convert to OpenAI messages
+   */
+  private processContents(
+    contents: ContentListUnion,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): void {
+    if (Array.isArray(contents)) {
+      for (const content of contents) {
+        this.processContent(content, messages);
+      }
+    } else if (contents) {
+      this.processContent(contents, messages);
+    }
+  }
+
+  /**
+   * Process a single content item and convert to OpenAI message(s)
+   */
+  private processContent(
+    content: ContentUnion | PartUnion,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): void {
+    if (typeof content === 'string') {
+      messages.push({ role: 'user' as const, content });
+      return;
+    }
+
+    if (!this.isContentObject(content)) return;
+
+    const parsedParts = this.parseParts(content.parts || []);
+
+    // Handle function responses (tool results) first
+    if (parsedParts.functionResponses.length > 0) {
+      for (const funcResponse of parsedParts.functionResponses) {
+        messages.push({
+          role: 'tool' as const,
+          tool_call_id: funcResponse.id || '',
+          content:
+            typeof funcResponse.response === 'string'
+              ? funcResponse.response
+              : JSON.stringify(funcResponse.response),
+        });
+      }
+      return;
+    }
+
+    // Handle model messages with function calls
+    if (content.role === 'model' && parsedParts.functionCalls.length > 0) {
+      const toolCalls = parsedParts.functionCalls.map((fc, index) => ({
+        id: fc.id || `call_${index}`,
+        type: 'function' as const,
+        function: {
+          name: fc.name || '',
+          arguments: JSON.stringify(fc.args || {}),
+        },
+      }));
+
+      messages.push({
+        role: 'assistant' as const,
+        content: parsedParts.textParts.join('') || null,
+        tool_calls: toolCalls,
+      });
+      return;
+    }
+
+    // Handle regular messages with multimodal content
+    const role = content.role === 'model' ? 'assistant' : 'user';
+    const openAIMessage = this.createMultimodalMessage(role, parsedParts);
+
+    if (openAIMessage) {
+      messages.push(openAIMessage);
+    }
+  }
+
+  /**
+   * Parse Gemini parts into categorized components
+   */
+  private parseParts(parts: Part[]): ParsedParts {
+    const textParts: string[] = [];
+    const functionCalls: FunctionCall[] = [];
+    const functionResponses: FunctionResponse[] = [];
+    const mediaParts: Array<{
+      type: 'image' | 'audio' | 'file';
+      data: string;
+      mimeType: string;
+      fileUri?: string;
+    }> = [];
+
+    for (const part of parts) {
+      if (typeof part === 'string') {
+        textParts.push(part);
+      } else if ('text' in part && part.text) {
+        textParts.push(part.text);
+      } else if ('functionCall' in part && part.functionCall) {
+        functionCalls.push(part.functionCall);
+      } else if ('functionResponse' in part && part.functionResponse) {
+        functionResponses.push(part.functionResponse);
+      } else if ('inlineData' in part && part.inlineData) {
+        const { data, mimeType } = part.inlineData;
+        if (data && mimeType) {
+          const mediaType = this.getMediaType(mimeType);
+          mediaParts.push({ type: mediaType, data, mimeType });
+        }
+      } else if ('fileData' in part && part.fileData) {
+        const { fileUri, mimeType } = part.fileData;
+        if (fileUri && mimeType) {
+          const mediaType = this.getMediaType(mimeType);
+          mediaParts.push({
+            type: mediaType,
+            data: '',
+            mimeType,
+            fileUri,
+          });
+        }
+      }
+    }
+
+    return { textParts, functionCalls, functionResponses, mediaParts };
+  }
+
+  /**
+   * Determine media type from MIME type
+   */
+  private getMediaType(mimeType: string): 'image' | 'audio' | 'file' {
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    return 'file';
+  }
+
+  /**
+   * Create multimodal OpenAI message from parsed parts
+   */
+  private createMultimodalMessage(
+    role: 'user' | 'assistant',
+    parsedParts: Pick<ParsedParts, 'textParts' | 'mediaParts'>,
+  ): OpenAI.Chat.ChatCompletionMessageParam | null {
+    const { textParts, mediaParts } = parsedParts;
+    const combinedText = textParts.join('');
+
+    // If no media parts, return simple text message
+    if (mediaParts.length === 0) {
+      return combinedText ? { role, content: combinedText } : null;
+    }
+
+    // For assistant messages with media, convert to text only
+    // since OpenAI assistant messages don't support media content arrays
+    if (role === 'assistant') {
+      return combinedText
+        ? { role: 'assistant' as const, content: combinedText }
+        : null;
+    }
+
+    // Create multimodal content array for user messages
+    const contentArray: OpenAI.Chat.ChatCompletionContentPart[] = [];
+
+    // Add text content
+    if (combinedText) {
+      contentArray.push({ type: 'text', text: combinedText });
+    }
+
+    // Add media content
+    for (const mediaPart of mediaParts) {
+      if (mediaPart.type === 'image') {
+        if (mediaPart.fileUri) {
+          // For file URIs, use the URI directly
+          contentArray.push({
+            type: 'image_url',
+            image_url: { url: mediaPart.fileUri },
+          });
+        } else if (mediaPart.data) {
+          // For inline data, create data URL
+          const dataUrl = `data:${mediaPart.mimeType};base64,${mediaPart.data}`;
+          contentArray.push({
+            type: 'image_url',
+            image_url: { url: dataUrl },
+          });
+        }
+      } else if (mediaPart.type === 'audio' && mediaPart.data) {
+        // Convert audio format from MIME type
+        const format = this.getAudioFormat(mediaPart.mimeType);
+        if (format) {
+          contentArray.push({
+            type: 'input_audio',
+            input_audio: {
+              data: mediaPart.data,
+              format: format as 'wav' | 'mp3',
+            },
+          });
+        }
+      }
+      // Note: File type is not directly supported in OpenAI's current API
+      // Could be extended in the future or handled as text description
+    }
+
+    return contentArray.length > 0
+      ? { role: 'user' as const, content: contentArray }
+      : null;
+  }
+
+  /**
+   * Convert MIME type to OpenAI audio format
+   */
+  private getAudioFormat(mimeType: string): 'wav' | 'mp3' | null {
+    if (mimeType.includes('wav')) return 'wav';
+    if (mimeType.includes('mp3') || mimeType.includes('mpeg')) return 'mp3';
+    return null;
+  }
+
+  /**
+   * Type guard to check if content is a valid Content object
+   */
+  private isContentObject(
+    content: unknown,
+  ): content is { role: string; parts: Part[] } {
+    return (
+      typeof content === 'object' &&
+      content !== null &&
+      'role' in content &&
+      'parts' in content &&
+      Array.isArray((content as Record<string, unknown>)['parts'])
+    );
+  }
+
+  /**
+   * Extract text content from various Gemini content union types
+   */
+  private extractTextFromContentUnion(contentUnion: unknown): string {
+    if (typeof contentUnion === 'string') {
+      return contentUnion;
+    }
+
+    if (Array.isArray(contentUnion)) {
+      return contentUnion
+        .map((item) => this.extractTextFromContentUnion(item))
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    if (typeof contentUnion === 'object' && contentUnion !== null) {
+      if ('parts' in contentUnion) {
+        const content = contentUnion as Content;
+        return (
+          content.parts
+            ?.map((part: Part) => {
+              if (typeof part === 'string') return part;
+              if ('text' in part) return part.text || '';
+              return '';
+            })
+            .filter(Boolean)
+            .join('\n') || ''
+        );
+      }
+    }
+
+    return '';
   }
 
   /**
@@ -416,79 +604,52 @@ export class Converter {
         }
       }
 
-      // Handle tool calls - only accumulate during streaming, emit when complete
+      // Handle tool calls using the streaming parser
       if (choice.delta?.tool_calls) {
         for (const toolCall of choice.delta.tool_calls) {
           const index = toolCall.index ?? 0;
 
-          // Get or create the tool call accumulator for this index
-          let accumulatedCall = this.streamingToolCalls.get(index);
-          if (!accumulatedCall) {
-            accumulatedCall = { arguments: '' };
-            this.streamingToolCalls.set(index, accumulatedCall);
-          }
-
-          // Update accumulated data
-          if (toolCall.id) {
-            accumulatedCall.id = toolCall.id;
-          }
-          if (toolCall.function?.name) {
-            // If this is a new function name, reset the arguments
-            if (accumulatedCall.name !== toolCall.function.name) {
-              accumulatedCall.arguments = '';
-            }
-            accumulatedCall.name = toolCall.function.name;
-          }
+          // Process the tool call chunk through the streaming parser
           if (toolCall.function?.arguments) {
-            // Check if we already have a complete JSON object
-            const currentArgs = accumulatedCall.arguments;
-            const newArgs = toolCall.function.arguments;
-
-            // If current arguments already form a complete JSON and new arguments start a new object,
-            // this indicates a new tool call with the same name
-            let shouldReset = false;
-            if (currentArgs && newArgs.trim().startsWith('{')) {
-              try {
-                JSON.parse(currentArgs);
-                // If we can parse current arguments as complete JSON and new args start with {,
-                // this is likely a new tool call
-                shouldReset = true;
-              } catch {
-                // Current arguments are not complete JSON, continue accumulating
-              }
-            }
-
-            if (shouldReset) {
-              accumulatedCall.arguments = newArgs;
-            } else {
-              accumulatedCall.arguments += newArgs;
-            }
+            this.streamingToolCallParser.addChunk(
+              index,
+              toolCall.function.arguments,
+              toolCall.id,
+              toolCall.function.name,
+            );
+          } else {
+            // Handle metadata-only chunks (id and/or name without arguments)
+            this.streamingToolCallParser.addChunk(
+              index,
+              '', // Empty chunk for metadata-only updates
+              toolCall.id,
+              toolCall.function?.name,
+            );
           }
         }
       }
 
       // Only emit function calls when streaming is complete (finish_reason is present)
       if (choice.finish_reason) {
-        for (const [, accumulatedCall] of this.streamingToolCalls) {
-          if (accumulatedCall.name) {
-            let args: Record<string, unknown> = {};
-            if (accumulatedCall.arguments) {
-              args = safeJsonParse(accumulatedCall.arguments, {});
-            }
+        const completedToolCalls =
+          this.streamingToolCallParser.getCompletedToolCalls();
 
+        for (const toolCall of completedToolCalls) {
+          if (toolCall.name) {
             parts.push({
               functionCall: {
                 id:
-                  accumulatedCall.id ||
+                  toolCall.id ||
                   `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-                name: accumulatedCall.name,
-                args,
+                name: toolCall.name,
+                args: toolCall.args,
               },
             });
           }
         }
-        // Clear all accumulated tool calls
-        this.streamingToolCalls.clear();
+
+        // Clear the parser for the next stream
+        this.streamingToolCallParser.reset();
       }
 
       response.candidates = [

@@ -10,8 +10,8 @@ import { OpenAICompatibleProvider } from './types.js';
 export class DefaultOpenAICompatibleProvider
   implements OpenAICompatibleProvider
 {
-  private contentGeneratorConfig: ContentGeneratorConfig;
-  private cliConfig: Config;
+  protected contentGeneratorConfig: ContentGeneratorConfig;
+  protected cliConfig: Config;
 
   constructor(
     contentGeneratorConfig: ContentGeneratorConfig,

@@ -131,70 +131,108 @@ export class DashScopeOpenAICompatibleProvider
     target: 'system' | 'last',
   ): OpenAI.Chat.ChatCompletionMessageParam[] {
     const updatedMessages = [...messages];
-    let messageIndex: number;
+    const messageIndex = this.findTargetMessageIndex(messages, target);
 
-    if (target === 'system') {
-      // Find the first system message
-      messageIndex = messages.findIndex((msg) => msg.role === 'system');
-      if (messageIndex === -1) {
-        return updatedMessages;
-      }
-    } else {
-      // Get the last message
-      messageIndex = messages.length - 1;
+    if (messageIndex === -1) {
+      return updatedMessages;
     }
 
     const message = updatedMessages[messageIndex];
 
     // Only process messages that have content
-    if ('content' in message && message.content !== null) {
-      if (typeof message.content === 'string') {
-        // Convert string content to array format with cache control
-        const messageWithArrayContent = {
-          ...message,
-          content: [
-            {
-              type: 'text',
-              text: message.content,
-              cache_control: { type: 'ephemeral' },
-            } as ChatCompletionContentPartTextWithCache,
-          ],
-        };
-        updatedMessages[messageIndex] =
-          messageWithArrayContent as OpenAI.Chat.ChatCompletionMessageParam;
-      } else if (Array.isArray(message.content)) {
-        // If content is already an array, add cache_control to the last item
-        const contentArray = [
-          ...message.content,
-        ] as ChatCompletionContentPartWithCache[];
-        if (contentArray.length > 0) {
-          const lastItem = contentArray[contentArray.length - 1];
-          if (lastItem.type === 'text') {
-            // Add cache_control to the last text item
-            contentArray[contentArray.length - 1] = {
-              ...lastItem,
-              cache_control: { type: 'ephemeral' },
-            } as ChatCompletionContentPartTextWithCache;
-          } else {
-            // If the last item is not text, add a new text item with cache_control
-            contentArray.push({
-              type: 'text',
-              text: '',
-              cache_control: { type: 'ephemeral' },
-            } as ChatCompletionContentPartTextWithCache);
-          }
-
-          const messageWithCache = {
-            ...message,
-            content: contentArray,
-          };
-          updatedMessages[messageIndex] =
-            messageWithCache as OpenAI.Chat.ChatCompletionMessageParam;
-        }
-      }
+    if (
+      'content' in message &&
+      message.content !== null &&
+      message.content !== undefined
+    ) {
+      const updatedContent = this.addCacheControlToContent(message.content);
+      updatedMessages[messageIndex] = {
+        ...message,
+        content: updatedContent,
+      } as OpenAI.Chat.ChatCompletionMessageParam;
     }
 
     return updatedMessages;
+  }
+
+  /**
+   * Find the index of the target message (system or last)
+   */
+  private findTargetMessageIndex(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    target: 'system' | 'last',
+  ): number {
+    if (target === 'system') {
+      return messages.findIndex((msg) => msg.role === 'system');
+    } else {
+      return messages.length - 1;
+    }
+  }
+
+  /**
+   * Add cache control to message content, handling both string and array formats
+   */
+  private addCacheControlToContent(
+    content: NonNullable<OpenAI.Chat.ChatCompletionMessageParam['content']>,
+  ): ChatCompletionContentPartWithCache[] {
+    // Convert content to array format if it's a string
+    const contentArray = this.normalizeContentToArray(content);
+
+    // Add cache control to the last text item or create one if needed
+    return this.addCacheControlToContentArray(contentArray);
+  }
+
+  /**
+   * Normalize content to array format
+   */
+  private normalizeContentToArray(
+    content: NonNullable<OpenAI.Chat.ChatCompletionMessageParam['content']>,
+  ): ChatCompletionContentPartWithCache[] {
+    if (typeof content === 'string') {
+      return [
+        {
+          type: 'text',
+          text: content,
+        } as ChatCompletionContentPartTextWithCache,
+      ];
+    }
+    return [...content] as ChatCompletionContentPartWithCache[];
+  }
+
+  /**
+   * Add cache control to the content array
+   */
+  private addCacheControlToContentArray(
+    contentArray: ChatCompletionContentPartWithCache[],
+  ): ChatCompletionContentPartWithCache[] {
+    if (contentArray.length === 0) {
+      return [
+        {
+          type: 'text',
+          text: '',
+          cache_control: { type: 'ephemeral' },
+        } as ChatCompletionContentPartTextWithCache,
+      ];
+    }
+
+    const lastItem = contentArray[contentArray.length - 1];
+
+    if (lastItem.type === 'text') {
+      // Add cache_control to the last text item
+      contentArray[contentArray.length - 1] = {
+        ...lastItem,
+        cache_control: { type: 'ephemeral' },
+      } as ChatCompletionContentPartTextWithCache;
+    } else {
+      // If the last item is not text, add a new text item with cache_control
+      contentArray.push({
+        type: 'text',
+        text: '',
+        cache_control: { type: 'ephemeral' },
+      } as ChatCompletionContentPartTextWithCache);
+    }
+
+    return contentArray;
   }
 
   /**
