@@ -505,8 +505,9 @@ describe('QwenContentGenerator', () => {
       parentPrototype.generateContent = vi.fn().mockImplementation(function (
         this: QwenContentGenerator,
       ) {
-        capturedBaseURL = (this as unknown as { client: { baseURL: string } })
-          .client.baseURL;
+        capturedBaseURL = (
+          this as unknown as { pipeline: { client: { baseURL: string } } }
+        ).pipeline.client.baseURL;
         return createMockResponse('Generated content');
       });
 
@@ -545,8 +546,9 @@ describe('QwenContentGenerator', () => {
       parentPrototype.generateContent = vi.fn().mockImplementation(function (
         this: QwenContentGenerator,
       ) {
-        capturedBaseURL = (this as unknown as { client: { baseURL: string } })
-          .client.baseURL;
+        capturedBaseURL = (
+          this as unknown as { pipeline: { client: { baseURL: string } } }
+        ).pipeline.client.baseURL;
         return createMockResponse('Generated content');
       });
 
@@ -583,8 +585,9 @@ describe('QwenContentGenerator', () => {
       parentPrototype.generateContent = vi.fn().mockImplementation(function (
         this: QwenContentGenerator,
       ) {
-        capturedBaseURL = (this as unknown as { client: { baseURL: string } })
-          .client.baseURL;
+        capturedBaseURL = (
+          this as unknown as { pipeline: { client: { baseURL: string } } }
+        ).pipeline.client.baseURL;
         return createMockResponse('Generated content');
       });
 
@@ -621,8 +624,9 @@ describe('QwenContentGenerator', () => {
       parentPrototype.generateContent = vi.fn().mockImplementation(function (
         this: QwenContentGenerator,
       ) {
-        capturedBaseURL = (this as unknown as { client: { baseURL: string } })
-          .client.baseURL;
+        capturedBaseURL = (
+          this as unknown as { pipeline: { client: { baseURL: string } } }
+        ).pipeline.client.baseURL;
         return createMockResponse('Generated content');
       });
 
@@ -642,20 +646,19 @@ describe('QwenContentGenerator', () => {
   });
 
   describe('Client State Management', () => {
-    it('should restore original client credentials after operations', async () => {
+    it('should set dynamic credentials during operations', async () => {
       const client = (
         qwenContentGenerator as unknown as {
-          client: { apiKey: string; baseURL: string };
+          pipeline: { client: { apiKey: string; baseURL: string } };
         }
-      ).client;
-      const originalApiKey = client.apiKey;
-      const originalBaseURL = client.baseURL;
+      ).pipeline.client;
 
       vi.mocked(mockQwenClient.getAccessToken).mockResolvedValue({
         token: 'temp-token',
       });
       vi.mocked(mockQwenClient.getCredentials).mockReturnValue({
         ...mockCredentials,
+        access_token: 'temp-token',
         resource_url: 'https://temp-endpoint.com',
       });
 
@@ -666,24 +669,25 @@ describe('QwenContentGenerator', () => {
 
       await qwenContentGenerator.generateContent(request, 'test-prompt-id');
 
-      // Should restore original values after operation
-      expect(client.apiKey).toBe(originalApiKey);
-      expect(client.baseURL).toBe(originalBaseURL);
+      // Should have dynamic credentials set
+      expect(client.apiKey).toBe('temp-token');
+      expect(client.baseURL).toBe('https://temp-endpoint.com/v1');
     });
 
-    it('should restore credentials even when operation throws', async () => {
+    it('should set credentials even when operation throws', async () => {
       const client = (
         qwenContentGenerator as unknown as {
-          client: { apiKey: string; baseURL: string };
+          pipeline: { client: { apiKey: string; baseURL: string } };
         }
-      ).client;
-      const originalApiKey = client.apiKey;
-      const originalBaseURL = client.baseURL;
+      ).pipeline.client;
 
       vi.mocked(mockQwenClient.getAccessToken).mockResolvedValue({
         token: 'temp-token',
       });
-      vi.mocked(mockQwenClient.getCredentials).mockReturnValue(mockCredentials);
+      vi.mocked(mockQwenClient.getCredentials).mockReturnValue({
+        ...mockCredentials,
+        access_token: 'temp-token',
+      });
 
       // Mock the parent method to throw an error
       const mockError = new Error('Network error');
@@ -704,9 +708,9 @@ describe('QwenContentGenerator', () => {
         expect(error).toBe(mockError);
       }
 
-      // Credentials should still be restored
-      expect(client.apiKey).toBe(originalApiKey);
-      expect(client.baseURL).toBe(originalBaseURL);
+      // Credentials should still be set before the error occurred
+      expect(client.apiKey).toBe('temp-token');
+      expect(client.baseURL).toBe('https://test-endpoint.com/v1');
 
       // Restore original method
       parentPrototype.generateContent = originalGenerateContent;
@@ -1292,20 +1296,19 @@ describe('QwenContentGenerator', () => {
   });
 
   describe('Stream Error Handling', () => {
-    it('should restore credentials when stream generation fails', async () => {
+    it('should set credentials when stream generation fails', async () => {
       const client = (
         qwenContentGenerator as unknown as {
-          client: { apiKey: string; baseURL: string };
+          pipeline: { client: { apiKey: string; baseURL: string } };
         }
-      ).client;
-      const originalApiKey = client.apiKey;
-      const originalBaseURL = client.baseURL;
+      ).pipeline.client;
 
       vi.mocked(mockQwenClient.getAccessToken).mockResolvedValue({
         token: 'stream-token',
       });
       vi.mocked(mockQwenClient.getCredentials).mockReturnValue({
         ...mockCredentials,
+        access_token: 'stream-token',
         resource_url: 'https://stream-endpoint.com',
       });
 
@@ -1333,20 +1336,20 @@ describe('QwenContentGenerator', () => {
         expect(error).toBeInstanceOf(Error);
       }
 
-      // Credentials should be restored even on error
-      expect(client.apiKey).toBe(originalApiKey);
-      expect(client.baseURL).toBe(originalBaseURL);
+      // Credentials should be set before the error occurred
+      expect(client.apiKey).toBe('stream-token');
+      expect(client.baseURL).toBe('https://stream-endpoint.com/v1');
 
       // Restore original method
       parentPrototype.generateContentStream = originalGenerateContentStream;
     });
 
-    it('should not restore credentials in finally block for successful streams', async () => {
+    it('should set credentials for successful streams', async () => {
       const client = (
         qwenContentGenerator as unknown as {
-          client: { apiKey: string; baseURL: string };
+          pipeline: { client: { apiKey: string; baseURL: string } };
         }
-      ).client;
+      ).pipeline.client;
 
       // Set up the mock to return stream credentials
       const streamCredentials = {
@@ -1379,11 +1382,12 @@ describe('QwenContentGenerator', () => {
         'test-prompt-id',
       );
 
-      // After successful stream creation, credentials should still be set for the stream
+      // After successful stream creation, credentials should be set for the stream
       expect(client.apiKey).toBe('stream-token');
       expect(client.baseURL).toBe('https://stream-endpoint.com/v1');
 
-      // Consume the stream
+      // Verify stream is iterable and consume it
+      expect(stream).toBeDefined();
       const chunks = [];
       for await (const chunk of stream) {
         chunks.push(chunk);
@@ -1489,15 +1493,21 @@ describe('QwenContentGenerator', () => {
   });
 
   describe('Constructor and Initialization', () => {
-    it('should initialize with default base URL', () => {
+    it('should initialize with configured base URL when provided', () => {
       const generator = new QwenContentGenerator(
         mockQwenClient,
-        { model: 'qwen-turbo', authType: AuthType.QWEN_OAUTH },
+        {
+          model: 'qwen-turbo',
+          authType: AuthType.QWEN_OAUTH,
+          baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          apiKey: 'test-key',
+        },
         mockConfig,
       );
 
-      const client = (generator as unknown as { client: { baseURL: string } })
-        .client;
+      const client = (
+        generator as unknown as { pipeline: { client: { baseURL: string } } }
+      ).pipeline.client;
       expect(client.baseURL).toBe(
         'https://dashscope.aliyuncs.com/compatible-mode/v1',
       );

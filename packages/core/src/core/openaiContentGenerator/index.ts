@@ -31,7 +31,7 @@ export { OpenAIContentConverter } from './converter.js';
 /**
  * Create an OpenAI-compatible content generator with the appropriate provider
  */
-export function createContentGenerator(
+export function createOpenAIContentGenerator(
   contentGeneratorConfig: ContentGeneratorConfig,
   cliConfig: Config,
 ): ContentGenerator {
