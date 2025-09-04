@@ -24,6 +24,95 @@ import { SharedTokenManager } from './sharedTokenManager.js';
 import { Config } from '../config/config.js';
 import { AuthType } from '../core/contentGenerator.js';
 
+// Mock OpenAI client to avoid real network calls
+vi.mock('openai', () => ({
+  default: class MockOpenAI {
+    chat = {
+      completions: {
+        create: vi.fn(),
+      },
+    };
+    embeddings = {
+      create: vi.fn(),
+    };
+    apiKey = '';
+    baseURL = '';
+    constructor(config: { apiKey: string; baseURL: string }) {
+      this.apiKey = config.apiKey;
+      this.baseURL = config.baseURL;
+    }
+  },
+}));
+
+// Mock DashScope provider
+vi.mock('../core/openaiContentGenerator/provider/dashscope.js', () => ({
+  DashScopeOpenAICompatibleProvider: class {
+    constructor(_config: unknown, _cliConfig: unknown) {}
+  },
+}));
+
+// Mock ContentGenerationPipeline
+vi.mock('../core/openaiContentGenerator/pipeline.js', () => ({
+  ContentGenerationPipeline: class {
+    client: {
+      apiKey: string;
+      baseURL: string;
+      chat: {
+        completions: {
+          create: ReturnType<typeof vi.fn>;
+        };
+      };
+      embeddings: {
+        create: ReturnType<typeof vi.fn>;
+      };
+    };
+
+    constructor(_config: unknown) {
+      this.client = {
+        apiKey: '',
+        baseURL: '',
+        chat: {
+          completions: {
+            create: vi.fn(),
+          },
+        },
+        embeddings: {
+          create: vi.fn(),
+        },
+      };
+    }
+
+    async execute(
+      _request: GenerateContentParameters,
+      _userPromptId: string,
+    ): Promise<GenerateContentResponse> {
+      return createMockResponse('Test response');
+    }
+
+    async executeStream(
+      _request: GenerateContentParameters,
+      _userPromptId: string,
+    ): Promise<AsyncGenerator<GenerateContentResponse>> {
+      return (async function* () {
+        yield createMockResponse('Stream chunk 1');
+        yield createMockResponse('Stream chunk 2');
+      })();
+    }
+
+    async countTokens(
+      _request: CountTokensParameters,
+    ): Promise<CountTokensResponse> {
+      return { totalTokens: 15 };
+    }
+
+    async embedContent(
+      _request: EmbedContentParameters,
+    ): Promise<EmbedContentResponse> {
+      return { embeddings: [{ values: [0.1, 0.2, 0.3] }] };
+    }
+  },
+}));
+
 // Mock SharedTokenManager
 vi.mock('./sharedTokenManager.js', () => ({
   SharedTokenManager: class {
@@ -132,7 +221,7 @@ vi.mock('./sharedTokenManager.js', () => ({
 }));
 
 // Mock the OpenAIContentGenerator parent class
-vi.mock('../core/refactor/openaiContentGenerator.js', () => ({
+vi.mock('../core/openaiContentGenerator/index.js', () => ({
   OpenAIContentGenerator: class {
     pipeline: {
       client: {
@@ -168,7 +257,7 @@ vi.mock('../core/refactor/openaiContentGenerator.js', () => ({
     async countTokens(
       _request: CountTokensParameters,
     ): Promise<CountTokensResponse> {
-      return { totalTokens: 10 };
+      return { totalTokens: 15 };
     }
 
     async embedContent(
@@ -328,7 +417,7 @@ describe('QwenContentGenerator', () => {
 
       const result = await qwenContentGenerator.countTokens(request);
 
-      expect(result.totalTokens).toBe(10);
+      expect(result.totalTokens).toBe(15);
       expect(mockQwenClient.getAccessToken).toHaveBeenCalled();
     });
 
