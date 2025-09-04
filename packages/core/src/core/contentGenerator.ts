@@ -208,10 +208,12 @@ export async function createContentGenerator(
     }
 
     // Import OpenAIContentGenerator dynamically to avoid circular dependencies
-    const { createContentGenerator } = await import('./refactor/index.js');
+    const { createOpenAIContentGenerator } = await import(
+      './openaiContentGenerator/index.js'
+    );
 
     // Always use OpenAIContentGenerator, logging is controlled by enableOpenAILogging flag
-    return createContentGenerator(config, gcConfig);
+    return createOpenAIContentGenerator(config, gcConfig);
   }
 
   if (config.authType === AuthType.QWEN_OAUTH) {

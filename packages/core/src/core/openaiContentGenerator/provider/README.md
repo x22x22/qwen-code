@@ -50,7 +50,7 @@ export class NewProviderOpenAICompatibleProvider
   implements OpenAICompatibleProvider
 {
   // Implementation...
-  
+
   static isNewProviderProvider(
     contentGeneratorConfig: ContentGeneratorConfig,
   ): boolean {

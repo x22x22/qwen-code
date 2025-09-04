@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { OpenAIContentGenerator } from '../core/refactor/openaiContentGenerator.js';
-import { DashScopeOpenAICompatibleProvider } from '../core/refactor/provider/dashscope.js';
+import { OpenAIContentGenerator } from '../core/openaiContentGenerator/index.js';
+import { DashScopeOpenAICompatibleProvider } from '../core/openaiContentGenerator/provider/dashscope.js';
 import { IQwenOAuth2Client } from './qwenOAuth2.js';
 import { SharedTokenManager } from './sharedTokenManager.js';
 import { Config } from '../config/config.js';
