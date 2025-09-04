@@ -58,84 +58,17 @@ jobs:
           VERBOSE: 'true'
           KEEP_OUTPUT: 'true'
 
-      - name: 'Upload test artifacts on failure'
-        if: 'failure()'
+      - name: 'Upload test artifacts'
+        if: 'always()'
         uses: 'actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b' # ratchet:actions/upload-artifact@v4
         with:
           name: 'terminal-bench-oracle-test-output'
           path: |
-            .integration-tests/
+            .integration-tests/**
             !.integration-tests/**/*.lock
             !.integration-tests/**/tb.lock
-            integration-tests/*.log
-          retention-days: 7
-
-  terminal-bench:
-    name: 'Terminal Bench - ${{ matrix.os }}'
-    runs-on: '${{ matrix.os }}'
-    needs: 'terminal-bench-oracle'
-    strategy:
-      matrix:
-        os: ['ubuntu-latest', 'macos-latest']
-        node-version: ['20.x']
-      fail-fast: false
-
-    steps:
-      - name: 'Checkout'
-        uses: 'actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8' # ratchet:actions/checkout@v5
-        with:
-          submodules: 'recursive'
-
-      - name: 'Install uv and set the python version'
-        uses: 'astral-sh/setup-uv@v6'
-        with:
-          python-version: '3.12'
-
-      - name: 'Set up Node.js ${{ matrix.node-version }}'
-        uses: 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020' # ratchet:actions/setup-node@v4
-        with:
-          node-version: '${{ matrix.node-version }}'
-          cache: 'npm'
-          cache-dependency-path: 'package-lock.json'
-          registry-url: 'https://registry.npmjs.org/'
-
-      - name: 'Configure npm for rate limiting'
-        run: |-
-          npm config set fetch-retry-mintimeout 20000
-          npm config set fetch-retry-maxtimeout 120000
-          npm config set fetch-retries 5
-          npm config set fetch-timeout 300000
-
-      - name: 'Install dependencies'
-        run: |-
-          npm ci --prefer-offline --no-audit --progress=false
-
-      - name: 'Build project'
-        run: |-
-          npm run build
-
-      - name: 'Run Terminal Bench tests'
-        run: 'npm run test:terminal-bench'
-        timeout-minutes: 30
-        env:
-          OPENAI_API_KEY: '${{ secrets.OPENAI_API_KEY }}'
-          OPENAI_BASE_URL: '${{ secrets.OPENAI_BASE_URL }}'
-          OPENAI_MODEL: '${{ secrets.OPENAI_MODEL }}'
-          CI: 'true'
-          NODE_ENV: 'test'
-          VERBOSE: 'true'
-          KEEP_OUTPUT: 'true'
-
-      - name: 'Upload test artifacts on failure'
-        if: 'failure()'
-        uses: 'actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b' # ratchet:actions/upload-artifact@v4
-        with:
-          name: 'terminal-bench-test-output-${{ matrix.os }}-${{ matrix.node-version }}'
-          path: |
-            .integration-tests/
-            !.integration-tests/**/*.lock
-            !.integration-tests/**/tb.lock
-            integration-tests/*.log
+            integration-tests/**/*.log
+          if-no-files-found: 'warn'
           retention-days: 7
 
   terminal-bench-qwen:
@@ -188,14 +121,15 @@ jobs:
           VERBOSE: 'true'
           KEEP_OUTPUT: 'true'
 
-      - name: 'Upload test artifacts on failure'
-        if: 'failure()'
+      - name: 'Upload test artifacts'
+        if: 'always()'
         uses: 'actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b' # ratchet:actions/upload-artifact@v4
         with:
           name: 'terminal-bench-qwen-test-output'
           path: |
-            .integration-tests/
+            .integration-tests/**
             !.integration-tests/**/*.lock
             !.integration-tests/**/tb.lock
-            integration-tests/*.log
+            integration-tests/**/*.log
+          if-no-files-found: 'warn'
           retention-days: 7
