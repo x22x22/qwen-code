@@ -1,4 +1,5 @@
 #!/bin/bash
+set -x
 apt-get update
 apt-get install -y curl
 
@@ -10,3 +11,5 @@ npm -v
 
 # Install Qwen Code
 npm install -g @qwen-code/qwen-code@{{ version }}
+
+qwen -v
