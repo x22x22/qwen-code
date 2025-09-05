@@ -1,16 +1,15 @@
 name: 'Terminal Bench Tests'
 
 on:
-  push:
-    branches:
-      - 'main'
-      - 'feat/**'
-      - 'feature/**'
-  pull_request:
-    branches:
-      - 'main'
-  merge_group:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'The version to test.'
+        required: true
+        type: 'string'
+        default: 'latest'
+  release:
+    types: [published]
 
 jobs:
   terminal-bench:
@@ -64,6 +63,7 @@ jobs:
           VERBOSE: 'true'
           KEEP_OUTPUT: 'true'
           TB_TASK_ID: '${{ matrix.task_id }}'
+          TB_TIMEOUT_MINUTES: '30'
 
       - name: 'Run Terminal Bench Qwen (task: ${{ matrix.task_id }})'
         run: 'npm run test:terminal-bench:qwen'
@@ -77,6 +77,7 @@ jobs:
           VERBOSE: 'true'
           KEEP_OUTPUT: 'true'
           TB_TASK_ID: '${{ matrix.task_id }}'
+          TB_TIMEOUT_MINUTES: '30'
 
       - name: 'Upload test artifacts'
         if: 'always()'

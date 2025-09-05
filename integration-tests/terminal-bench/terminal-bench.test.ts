@@ -20,6 +20,12 @@ describe('terminal-bench integration', () => {
   // Use local ci-tasks directory for self-contained tests
   const ciTasksPath = join(__dirname, 'ci-tasks');
 
+  // Single timeout source (minutes), defaults to workflow's 30 minutes
+  const DEFAULT_TIMEOUT_MINUTES = Number(
+    process.env['TB_TIMEOUT_MINUTES'] || '30',
+  );
+  const DEFAULT_TIMEOUT_MS = DEFAULT_TIMEOUT_MINUTES * 60 * 1000;
+
   // Use the integration test directory set by globalSetup.ts if available,
   // otherwise create our own in .integration-tests
   const integrationTestsDir = join(rootDir, '.integration-tests');
@@ -54,9 +60,7 @@ describe('terminal-bench integration', () => {
       console.log('Installing terminal-bench...');
       // Use uv tool install for terminal-bench
       try {
-        execSync('uv tool install --python 3.12 terminal-bench', {
-          stdio: 'inherit',
-        });
+        execSync('uv tool install --python 3.12 terminal-bench');
         // Add uv tools to PATH for this process
         process.env['PATH'] =
           `${process.env['HOME']}/.local/bin:${process.env['PATH']}`;
@@ -77,23 +81,20 @@ describe('terminal-bench integration', () => {
   });
 
   // Test configuration for different tasks
-  const baseTestTasks = [
-    { id: 'hello-world', timeout: 300000 },
-    { id: 'swe-bench-astropy-1', timeout: 600000 },
-  ] as const;
+  const baseTestTasks = ['hello-world', 'swe-bench-astropy-1'] as const;
 
   // Allow CI to select a specific task (or a subset) via env var
   const envTaskId = process.env['TB_TASK_ID'];
   const envTaskIds = process.env['TB_TASK_IDS']; // comma-separated list
 
-  let testTasks = baseTestTasks.map((t) => ({ ...t }));
+  let testTasks = [...baseTestTasks];
   if (envTaskId || envTaskIds) {
     const selected = (envTaskIds || envTaskId || '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
 
-    const available = new Set(baseTestTasks.map((t) => t.id));
+    const available = new Set(baseTestTasks.map((t) => t));
     const unknown = selected.filter((s) => !available.has(s));
     if (unknown.length > 0) {
       throw new Error(
@@ -101,16 +102,14 @@ describe('terminal-bench integration', () => {
       );
     }
 
-    testTasks = baseTestTasks
-      .filter((t) => selected.includes(t.id))
-      .map((t) => ({ ...t }));
+    testTasks = baseTestTasks.filter((t) => selected.includes(t));
 
     if (testTasks.length === 0) {
       throw new Error('No tasks selected via TB_TASK_ID/TB_TASK_IDS.');
     }
   }
 
-  describe.each(testTasks)('Task: $id', ({ id: taskId, timeout }) => {
+  describe.each(testTasks)('Task: %s', (taskId) => {
     it(`should complete ${taskId} task with oracle agent`, async () => {
       rig.setup(`terminal-bench-oracle-${taskId}`);
 
@@ -124,14 +123,56 @@ describe('terminal-bench integration', () => {
         );
       }
 
-      // Run oracle agent on the task using ci-tasks dataset
-      const command = `tb run --agent oracle --dataset-path ${ciTasksPath} --task-id ${taskId} --output-path ${outputPath} --n-concurrent 1`;
+      // Run oracle agent on the task using ci-tasks dataset (non-blocking)
+      const args = [
+        'run',
+        '--agent',
+        'oracle',
+        '--dataset-path',
+        ciTasksPath,
+        '--task-id',
+        taskId,
+        '--output-path',
+        outputPath,
+        '--n-concurrent',
+        '1',
+      ];
 
       try {
-        const result = execSync(command, {
-          encoding: 'utf-8',
-          timeout: timeout - 60000, // Leave 1 minute buffer
-          env: { ...process.env },
+        const result = await new Promise<string>((resolve, reject) => {
+          let stdout = '';
+          let stderr = '';
+
+          const child = spawn('tb', args, { env: { ...process.env } });
+
+          child.stdout?.on('data', (data) => {
+            stdout += data.toString();
+          });
+
+          child.stderr?.on('data', (data) => {
+            stderr += data.toString();
+          });
+
+          const to = setTimeout(() => {
+            child.kill();
+            reject(new Error(`Process timeout for ${taskId}`));
+          }, Math.max(60_000, DEFAULT_TIMEOUT_MS - 60_000)); // Leave 1 minute buffer
+
+          child.on('close', (code) => {
+            clearTimeout(to);
+            if (code !== 0) {
+              console.error(`oracle agent failed for ${taskId} with stderr:`, stderr);
+              reject(new Error(`Process exited with code ${code}: ${stderr}`));
+            } else {
+              resolve(stdout);
+            }
+          });
+
+          child.on('error', (error) => {
+            clearTimeout(to);
+            console.error('Failed to start process:', error);
+            reject(error);
+          });
         });
 
         // Check if the run succeeded
@@ -155,7 +196,7 @@ describe('terminal-bench integration', () => {
         console.error(`Oracle agent failed for ${taskId}:`, error);
         throw error;
       }
-    }, timeout);
+    }, DEFAULT_TIMEOUT_MS);
 
     it(`should complete ${taskId} task with qwen-code agent`, async () => {
       rig.setup(`terminal-bench-qwen-${taskId}`);
@@ -231,7 +272,7 @@ describe('terminal-bench integration', () => {
         setTimeout(() => {
           child.kill();
           reject(new Error(`Process timeout for ${taskId}`));
-        }, timeout - 60000); // Leave 1 minute buffer
+        }, Math.max(60_000, DEFAULT_TIMEOUT_MS - 60_000)); // Leave 1 minute buffer
       }).catch((error) => {
         // This is expected if API key is not configured correctly
         if (error instanceof Error && error.message?.includes('API')) {
@@ -260,6 +301,6 @@ describe('terminal-bench integration', () => {
       expect(results).toHaveProperty('accuracy');
       expect(results.n_resolved).toBeGreaterThan(0); // At least one task should be resolved
       expect(results.accuracy).toBeGreaterThan(0); // Accuracy should be greater than 0
-    }, timeout);
+    }, DEFAULT_TIMEOUT_MS);
   });
 });
