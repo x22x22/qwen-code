@@ -9,7 +9,7 @@ on:
         type: 'string'
         default: 'latest'
   release:
-    types: [published]
+    types: ['published']
 
 jobs:
   terminal-bench:
