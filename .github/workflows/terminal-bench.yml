@@ -1,6 +1,9 @@
 name: 'Terminal Bench Tests'
 
 on:
+  push:
+    branches:
+      - 'feat/tbench*'
   workflow_dispatch:
     inputs:
       version:
