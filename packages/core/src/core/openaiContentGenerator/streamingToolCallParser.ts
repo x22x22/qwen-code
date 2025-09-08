@@ -21,20 +21,14 @@ export interface ToolCallParseResult {
 }
 
 /**
- * Streaming Tool Call Parser Implementation
+ * StreamingToolCallParser - Handles streaming tool call objects with inconsistent chunk formats
  *
- * This class implements a sophisticated streaming parser specifically designed for
- * handling tool call arguments that arrive as partial JSON data in chunks during
- * OpenAI streaming responses. It extends the principles from the streaming JSON parser
- * to handle the specific requirements of tool call processing.
- *
- * Key Features:
- * - Real-time depth tracking for nested JSON structures in tool arguments
- * - Proper handling of string literals and escape sequences
- * - Automatic repair of common JSON formatting issues
- * - Support for multiple consecutive tool calls with same or different function names
- * - Memory-efficient processing without storing complete JSON in memory
- * - State management for individual tool call indices
+ * Problems this parser addresses:
+ * - Tool calls arrive with varying chunk shapes (empty strings, partial JSON, complete objects)
+ * - Tool calls may lack IDs, names, or have inconsistent indices
+ * - Multiple tool calls can be processed simultaneously with interleaved chunks
+ * - Index collisions occur when the same index is reused for different tool calls
+ * - JSON arguments are fragmented across multiple chunks and need reconstruction
  */
 export class StreamingToolCallParser {
   /** Accumulated buffer containing all received chunks for each tool call index */
@@ -47,24 +41,26 @@ export class StreamingToolCallParser {
   private escapes: Map<number, boolean> = new Map();
   /** Metadata for each tool call index */
   private toolCallMeta: Map<number, { id?: string; name?: string }> = new Map();
+  /** Map from tool call ID to actual index used for storage */
+  private idToIndexMap: Map<string, number> = new Map();
+  /** Counter for generating new indices when collisions occur */
+  private nextAvailableIndex: number = 0;
 
   /**
    * Processes a new chunk of tool call data and attempts to parse complete JSON objects
    *
-   * This method implements a state machine that tracks:
-   * 1. JSON structure depth (brackets and braces) per tool call index
-   * 2. String literal boundaries per tool call index
-   * 3. Escape sequences within strings per tool call index
-   * 4. Tool call metadata (id, function name) per tool call index
+   * Handles the core problems of streaming tool call parsing:
+   * - Resolves index collisions when the same index is reused for different tool calls
+   * - Routes chunks without IDs to the correct incomplete tool call
+   * - Tracks JSON parsing state (depth, string boundaries, escapes) per tool call
+   * - Attempts parsing only when JSON structure is complete (depth = 0)
+   * - Repairs common issues like unclosed strings
    *
-   * The parser only attempts to parse when the depth returns to 0, indicating
-   * a complete JSON structure has been received for that specific tool call index.
-   *
-   * @param index - The tool call index from OpenAI streaming response
-   * @param chunk - A string chunk containing partial JSON data for arguments
-   * @param id - Optional tool call ID
-   * @param name - Optional function name
-   * @returns ToolCallParseResult indicating whether parsing is complete and any parsed value
+   * @param index - Tool call index from streaming response (may collide with existing calls)
+   * @param chunk - String chunk that may be empty, partial JSON, or complete data
+   * @param id - Optional tool call ID for collision detection and chunk routing
+   * @param name - Optional function name stored as metadata
+   * @returns ToolCallParseResult with completion status, parsed value, and repair info
    */
   addChunk(
     index: number,
@@ -72,54 +68,92 @@ export class StreamingToolCallParser {
     id?: string,
     name?: string,
   ): ToolCallParseResult {
-    // Initialize state for this index if not exists
-    if (!this.buffers.has(index)) {
-      this.buffers.set(index, '');
-      this.depths.set(index, 0);
-      this.inStrings.set(index, false);
-      this.escapes.set(index, false);
-      this.toolCallMeta.set(index, {});
-    }
+    let actualIndex = index;
 
-    // Update metadata
-    const meta = this.toolCallMeta.get(index)!;
-    if (id) meta.id = id;
-    if (name) {
-      // If this is a new function name and we have existing arguments,
-      // it might be a new tool call with the same index - reset the buffer
-      if (meta.name && meta.name !== name && this.buffers.get(index)) {
-        const currentBuffer = this.buffers.get(index)!;
-        // Check if current buffer contains complete JSON
-        if (currentBuffer.trim()) {
-          try {
-            JSON.parse(currentBuffer);
-            // If we can parse it, this is likely a new tool call - reset state
-            this.resetIndex(index);
-            // Update metadata after reset
-            const resetMeta = this.toolCallMeta.get(index)!;
-            if (id) resetMeta.id = id;
-            resetMeta.name = name;
-          } catch {
-            // Current buffer is incomplete, continue accumulating
-            meta.name = name;
-          }
-        } else {
-          meta.name = name;
-        }
+    // Handle tool call ID mapping for collision detection
+    if (id) {
+      // This is the start of a new tool call with an ID
+      if (this.idToIndexMap.has(id)) {
+        // We've seen this ID before, use the existing mapped index
+        actualIndex = this.idToIndexMap.get(id)!;
       } else {
-        meta.name = name;
+        // New tool call ID
+        // Check if the requested index is already occupied by a different complete tool call
+        if (this.buffers.has(index)) {
+          const existingBuffer = this.buffers.get(index)!;
+          const existingDepth = this.depths.get(index)!;
+          const existingMeta = this.toolCallMeta.get(index);
+
+          // Check if we have a complete tool call at this index
+          if (
+            existingBuffer.trim() &&
+            existingDepth === 0 &&
+            existingMeta?.id &&
+            existingMeta.id !== id
+          ) {
+            try {
+              JSON.parse(existingBuffer);
+              // We have a complete tool call with a different ID at this index
+              // Find a new index for this tool call
+              actualIndex = this.findNextAvailableIndex();
+            } catch {
+              // Existing buffer is not complete JSON, we can reuse this index
+            }
+          }
+        }
+
+        // Map this ID to the actual index we're using
+        this.idToIndexMap.set(id, actualIndex);
+      }
+    } else {
+      // No ID provided - this is a continuation chunk
+      // Try to find which tool call this belongs to based on the index
+      // Look for an existing tool call at this index that's not complete
+      if (this.buffers.has(index)) {
+        const existingBuffer = this.buffers.get(index)!;
+        const existingDepth = this.depths.get(index)!;
+
+        // If there's an incomplete tool call at this index, continue with it
+        if (existingDepth > 0 || !existingBuffer.trim()) {
+          actualIndex = index;
+        } else {
+          // Check if the buffer at this index is complete
+          try {
+            JSON.parse(existingBuffer);
+            // Buffer is complete, this chunk might belong to a different tool call
+            // Find the most recent incomplete tool call
+            actualIndex = this.findMostRecentIncompleteIndex();
+          } catch {
+            // Buffer is incomplete, continue with this index
+            actualIndex = index;
+          }
+        }
       }
     }
 
-    // Get current state for this index
-    const currentBuffer = this.buffers.get(index)!;
-    const currentDepth = this.depths.get(index)!;
-    const currentInString = this.inStrings.get(index)!;
-    const currentEscape = this.escapes.get(index)!;
+    // Initialize state for the actual index if not exists
+    if (!this.buffers.has(actualIndex)) {
+      this.buffers.set(actualIndex, '');
+      this.depths.set(actualIndex, 0);
+      this.inStrings.set(actualIndex, false);
+      this.escapes.set(actualIndex, false);
+      this.toolCallMeta.set(actualIndex, {});
+    }
+
+    // Update metadata
+    const meta = this.toolCallMeta.get(actualIndex)!;
+    if (id) meta.id = id;
+    if (name) meta.name = name;
+
+    // Get current state for the actual index
+    const currentBuffer = this.buffers.get(actualIndex)!;
+    const currentDepth = this.depths.get(actualIndex)!;
+    const currentInString = this.inStrings.get(actualIndex)!;
+    const currentEscape = this.escapes.get(actualIndex)!;
 
     // Add chunk to buffer
     const newBuffer = currentBuffer + chunk;
-    this.buffers.set(index, newBuffer);
+    this.buffers.set(actualIndex, newBuffer);
 
     // Track JSON structure depth - only count brackets/braces outside of strings
     let depth = currentDepth;
@@ -141,9 +175,9 @@ export class StreamingToolCallParser {
     }
 
     // Update state
-    this.depths.set(index, depth);
-    this.inStrings.set(index, inString);
-    this.escapes.set(index, escape);
+    this.depths.set(actualIndex, depth);
+    this.inStrings.set(actualIndex, inString);
+    this.escapes.set(actualIndex, escape);
 
     // Attempt parse when we're back at root level (depth 0) and have data
     if (depth === 0 && newBuffer.trim().length > 0) {
@@ -188,7 +222,14 @@ export class StreamingToolCallParser {
 
   /**
    * Gets all completed tool calls that are ready to be emitted
-   * This method should be called when the streaming is complete (finish_reason is present)
+   *
+   * Attempts to parse accumulated buffers using multiple strategies:
+   * 1. Standard JSON.parse()
+   * 2. Auto-close unclosed strings and retry
+   * 3. Fallback to safeJsonParse for malformed data
+   *
+   * Only returns tool calls with both name metadata and non-empty buffers.
+   * Should be called when streaming is complete (finish_reason is present).
    *
    * @returns Array of completed tool calls with their metadata and parsed arguments
    */
@@ -241,6 +282,79 @@ export class StreamingToolCallParser {
   }
 
   /**
+   * Finds the next available index for a new tool call
+   *
+   * Scans indices starting from nextAvailableIndex to find one that's safe to use.
+   * Reuses indices with empty buffers or incomplete parsing states.
+   * Skips indices with complete, parseable tool call data to prevent overwriting.
+   *
+   * @returns The next available index safe for storing a new tool call
+   */
+  private findNextAvailableIndex(): number {
+    while (this.buffers.has(this.nextAvailableIndex)) {
+      // Check if this index has a complete tool call
+      const buffer = this.buffers.get(this.nextAvailableIndex)!;
+      const depth = this.depths.get(this.nextAvailableIndex)!;
+      const meta = this.toolCallMeta.get(this.nextAvailableIndex);
+
+      // If buffer is empty or incomplete (depth > 0), this index is available
+      if (!buffer.trim() || depth > 0 || !meta?.id) {
+        return this.nextAvailableIndex;
+      }
+
+      // Try to parse the buffer to see if it's complete
+      try {
+        JSON.parse(buffer);
+        // If parsing succeeds and depth is 0, this index has a complete tool call
+        if (depth === 0) {
+          this.nextAvailableIndex++;
+          continue;
+        }
+      } catch {
+        // If parsing fails, this index is available for reuse
+        return this.nextAvailableIndex;
+      }
+
+      this.nextAvailableIndex++;
+    }
+    return this.nextAvailableIndex++;
+  }
+
+  /**
+   * Finds the most recent incomplete tool call index
+   *
+   * Used when continuation chunks arrive without IDs. Scans existing tool calls
+   * to find the highest index with incomplete parsing state (depth > 0, empty buffer,
+   * or unparseable JSON). Falls back to creating a new index if none found.
+   *
+   * @returns The index of the most recent incomplete tool call, or a new available index
+   */
+  private findMostRecentIncompleteIndex(): number {
+    // Look for the highest index that has an incomplete tool call
+    let maxIndex = -1;
+    for (const [index, buffer] of this.buffers.entries()) {
+      const depth = this.depths.get(index)!;
+      const meta = this.toolCallMeta.get(index);
+
+      // Check if this tool call is incomplete
+      if (meta?.id && (depth > 0 || !buffer.trim())) {
+        maxIndex = Math.max(maxIndex, index);
+      } else if (buffer.trim()) {
+        // Check if buffer is parseable (complete)
+        try {
+          JSON.parse(buffer);
+          // Buffer is complete, skip this index
+        } catch {
+          // Buffer is incomplete, this could be our target
+          maxIndex = Math.max(maxIndex, index);
+        }
+      }
+    }
+
+    return maxIndex >= 0 ? maxIndex : this.findNextAvailableIndex();
+  }
+
+  /**
    * Resets the parser state for a specific tool call index
    *
    * @param index - The tool call index to reset
@@ -256,8 +370,9 @@ export class StreamingToolCallParser {
   /**
    * Resets the entire parser state for processing a new stream
    *
-   * This method clears all internal state variables, allowing the parser
-   * to be reused for multiple streams without interference.
+   * Clears all accumulated buffers, parsing states, metadata, and counters.
+   * Allows the parser to be reused for multiple independent streams without
+   * data leakage between sessions.
    */
   reset(): void {
     this.buffers.clear();
@@ -265,16 +380,15 @@ export class StreamingToolCallParser {
     this.inStrings.clear();
     this.escapes.clear();
     this.toolCallMeta.clear();
+    this.idToIndexMap.clear();
+    this.nextAvailableIndex = 0;
   }
 
   /**
    * Gets the current accumulated buffer content for a specific index
    *
-   * Useful for debugging or when you need to inspect the raw data
-   * that has been accumulated so far.
-   *
-   * @param index - The tool call index
-   * @returns The current buffer content for the specified index
+   * @param index - The tool call index to retrieve buffer for
+   * @returns The current buffer content for the specified index (empty string if not found)
    */
   getBuffer(index: number): string {
     return this.buffers.get(index) || '';
@@ -283,8 +397,8 @@ export class StreamingToolCallParser {
   /**
    * Gets the current parsing state information for a specific index
    *
-   * @param index - The tool call index
-   * @returns Object containing current depth, string state, and escape state
+   * @param index - The tool call index to get state information for
+   * @returns Object containing current parsing state (depth, inString, escape)
    */
   getState(index: number): {
     depth: number;

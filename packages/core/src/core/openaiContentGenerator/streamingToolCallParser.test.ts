@@ -310,7 +310,7 @@ describe('StreamingToolCallParser', () => {
       expect(parser.getToolCallMeta(0).name).toBe('my_function');
     });
 
-    it('should detect new tool call with same index and reset state', () => {
+    it('should detect new tool call with same index and reassign to new index', () => {
       // First tool call
       const result1 = parser.addChunk(
         0,
@@ -320,12 +320,23 @@ describe('StreamingToolCallParser', () => {
       );
       expect(result1.complete).toBe(true);
 
-      // New tool call with same index but different function name should reset
+      // New tool call with same index but different ID should get reassigned to new index
       const result2 = parser.addChunk(0, '{"param2":', 'call_2', 'function2');
       expect(result2.complete).toBe(false);
-      expect(parser.getBuffer(0)).toBe('{"param2":');
-      expect(parser.getToolCallMeta(0).name).toBe('function2');
-      expect(parser.getToolCallMeta(0).id).toBe('call_2');
+
+      // The original index 0 should still have the first tool call
+      expect(parser.getBuffer(0)).toBe('{"param1": "value1"}');
+      expect(parser.getToolCallMeta(0)).toEqual({
+        id: 'call_1',
+        name: 'function1',
+      });
+
+      // The new tool call should be at a different index (1)
+      expect(parser.getBuffer(1)).toBe('{"param2":');
+      expect(parser.getToolCallMeta(1)).toEqual({
+        id: 'call_2',
+        name: 'function2',
+      });
     });
   });
 
@@ -387,43 +398,6 @@ describe('StreamingToolCallParser', () => {
 
       const completed = parser.getCompletedToolCalls();
       expect(completed).toHaveLength(0);
-    });
-  });
-
-  describe('Reset functionality', () => {
-    it('should reset specific index', () => {
-      parser.addChunk(0, '{"param":', 'call_1', 'function1');
-      parser.addChunk(1, '{"other":', 'call_2', 'function2');
-
-      parser.resetIndex(0);
-
-      expect(parser.getBuffer(0)).toBe('');
-      expect(parser.getState(0)).toEqual({
-        depth: 0,
-        inString: false,
-        escape: false,
-      });
-      expect(parser.getToolCallMeta(0)).toEqual({});
-
-      // Index 1 should remain unchanged
-      expect(parser.getBuffer(1)).toBe('{"other":');
-      expect(parser.getToolCallMeta(1)).toEqual({
-        id: 'call_2',
-        name: 'function2',
-      });
-    });
-
-    it('should reset entire parser state', () => {
-      parser.addChunk(0, '{"param1":', 'call_1', 'function1');
-      parser.addChunk(1, '{"param2":', 'call_2', 'function2');
-
-      parser.reset();
-
-      expect(parser.getBuffer(0)).toBe('');
-      expect(parser.getBuffer(1)).toBe('');
-      expect(parser.getToolCallMeta(0)).toEqual({});
-      expect(parser.getToolCallMeta(1)).toEqual({});
-      expect(parser.getCompletedToolCalls()).toHaveLength(0);
     });
   });
 
@@ -565,6 +539,257 @@ describe('StreamingToolCallParser', () => {
       const completed = parser.getCompletedToolCalls();
       expect(completed).toHaveLength(1);
       expect(completed[0].args).toEqual({ message: 'Hello world' });
+    });
+  });
+
+  describe('Tool call ID collision detection and mapping', () => {
+    it('should handle tool call ID reuse correctly', () => {
+      // First tool call with ID 'call_1' at index 0
+      const result1 = parser.addChunk(
+        0,
+        '{"param1": "value1"}',
+        'call_1',
+        'function1',
+      );
+      expect(result1.complete).toBe(true);
+
+      // Second tool call with same ID 'call_1' should reuse the same internal index
+      // and append to the buffer (this is the actual behavior)
+      const result2 = parser.addChunk(
+        0,
+        '{"param2": "value2"}',
+        'call_1',
+        'function2',
+      );
+      expect(result2.complete).toBe(false); // Not complete because buffer is malformed
+
+      // Should have updated the metadata but appended to buffer
+      expect(parser.getToolCallMeta(0)).toEqual({
+        id: 'call_1',
+        name: 'function2',
+      });
+      expect(parser.getBuffer(0)).toBe(
+        '{"param1": "value1"}{"param2": "value2"}',
+      );
+    });
+
+    it('should detect index collision and find new index', () => {
+      // First complete tool call at index 0
+      parser.addChunk(0, '{"param1": "value1"}', 'call_1', 'function1');
+
+      // New tool call with different ID but same index should get reassigned
+      const result = parser.addChunk(0, '{"param2":', 'call_2', 'function2');
+      expect(result.complete).toBe(false);
+
+      // Complete the second tool call
+      const result2 = parser.addChunk(0, ' "value2"}');
+      expect(result2.complete).toBe(true);
+
+      const completed = parser.getCompletedToolCalls();
+      expect(completed).toHaveLength(2);
+
+      // Should have both tool calls with different IDs
+      const call1 = completed.find((tc) => tc.id === 'call_1');
+      const call2 = completed.find((tc) => tc.id === 'call_2');
+      expect(call1).toBeDefined();
+      expect(call2).toBeDefined();
+      expect(call1?.args).toEqual({ param1: 'value1' });
+      expect(call2?.args).toEqual({ param2: 'value2' });
+    });
+
+    it('should handle continuation chunks without ID correctly', () => {
+      // Start a tool call
+      parser.addChunk(0, '{"param":', 'call_1', 'function1');
+
+      // Add continuation chunk without ID
+      const result = parser.addChunk(0, ' "value"}');
+      expect(result.complete).toBe(true);
+      expect(result.value).toEqual({ param: 'value' });
+
+      expect(parser.getToolCallMeta(0)).toEqual({
+        id: 'call_1',
+        name: 'function1',
+      });
+    });
+
+    it('should find most recent incomplete tool call for continuation chunks', () => {
+      // Start multiple tool calls
+      parser.addChunk(0, '{"param1": "complete"}', 'call_1', 'function1');
+      parser.addChunk(1, '{"param2":', 'call_2', 'function2');
+      parser.addChunk(2, '{"param3":', 'call_3', 'function3');
+
+      // Add continuation chunk without ID at index 1 - should continue the incomplete tool call at index 1
+      const result = parser.addChunk(1, ' "continuation"}');
+      expect(result.complete).toBe(true);
+
+      const completed = parser.getCompletedToolCalls();
+      const call2 = completed.find((tc) => tc.id === 'call_2');
+      expect(call2?.args).toEqual({ param2: 'continuation' });
+    });
+  });
+
+  describe('Index management and reset functionality', () => {
+    it('should reset individual index correctly', () => {
+      // Set up some state at index 0
+      parser.addChunk(0, '{"partial":', 'call_1', 'function1');
+      expect(parser.getBuffer(0)).toBe('{"partial":');
+      expect(parser.getState(0).depth).toBe(1);
+      expect(parser.getToolCallMeta(0)).toEqual({
+        id: 'call_1',
+        name: 'function1',
+      });
+
+      // Reset the index
+      parser.resetIndex(0);
+
+      // Verify everything is cleared
+      expect(parser.getBuffer(0)).toBe('');
+      expect(parser.getState(0)).toEqual({
+        depth: 0,
+        inString: false,
+        escape: false,
+      });
+      expect(parser.getToolCallMeta(0)).toEqual({});
+    });
+
+    it('should find next available index when all lower indices are occupied', () => {
+      // Fill up indices 0, 1, 2 with complete tool calls
+      parser.addChunk(0, '{"param0": "value0"}', 'call_0', 'function0');
+      parser.addChunk(1, '{"param1": "value1"}', 'call_1', 'function1');
+      parser.addChunk(2, '{"param2": "value2"}', 'call_2', 'function2');
+
+      // New tool call should get assigned to index 3
+      const result = parser.addChunk(
+        0,
+        '{"param3": "value3"}',
+        'call_3',
+        'function3',
+      );
+      expect(result.complete).toBe(true);
+
+      const completed = parser.getCompletedToolCalls();
+      expect(completed).toHaveLength(4);
+
+      // Verify the new tool call got a different index
+      const call3 = completed.find((tc) => tc.id === 'call_3');
+      expect(call3).toBeDefined();
+      expect(call3?.index).toBe(3);
+    });
+
+    it('should reuse incomplete index when available', () => {
+      // Create an incomplete tool call at index 0
+      parser.addChunk(0, '{"incomplete":', 'call_1', 'function1');
+
+      // New tool call with different ID should reuse the incomplete index
+      const result = parser.addChunk(0, ' "completed"}', 'call_2', 'function2');
+      expect(result.complete).toBe(true);
+
+      // Should have updated the metadata for the same index
+      expect(parser.getToolCallMeta(0)).toEqual({
+        id: 'call_2',
+        name: 'function2',
+      });
+    });
+  });
+
+  describe('Repair functionality and flags', () => {
+    it('should test repair functionality in getCompletedToolCalls', () => {
+      // The repair functionality is primarily used in getCompletedToolCalls, not addChunk
+      parser.addChunk(0, '{"message": "unclosed string', 'call_1', 'function1');
+
+      // The addChunk should not complete because depth > 0 and inString = true
+      expect(parser.getState(0).depth).toBe(1);
+      expect(parser.getState(0).inString).toBe(true);
+
+      // But getCompletedToolCalls should repair it
+      const completed = parser.getCompletedToolCalls();
+      expect(completed).toHaveLength(1);
+      expect(completed[0].args).toEqual({ message: 'unclosed string' });
+    });
+
+    it('should not set repaired flag for normal parsing', () => {
+      const result = parser.addChunk(
+        0,
+        '{"message": "normal"}',
+        'call_1',
+        'function1',
+      );
+
+      expect(result.complete).toBe(true);
+      expect(result.repaired).toBeUndefined();
+      expect(result.value).toEqual({ message: 'normal' });
+    });
+
+    it('should not attempt repair when still in nested structure', () => {
+      const result = parser.addChunk(
+        0,
+        '{"nested": {"unclosed": "string',
+        'call_1',
+        'function1',
+      );
+
+      // Should not attempt repair because depth > 0
+      expect(result.complete).toBe(false);
+      expect(result.repaired).toBeUndefined();
+      expect(parser.getState(0).depth).toBe(2);
+    });
+
+    it('should handle repair failure gracefully', () => {
+      // Create malformed JSON that can't be repaired at depth 0
+      const result = parser.addChunk(
+        0,
+        '{invalid: json}',
+        'call_1',
+        'function1',
+      );
+
+      expect(result.complete).toBe(false);
+      expect(result.error).toBeInstanceOf(Error);
+      expect(result.repaired).toBeUndefined();
+    });
+  });
+
+  describe('Complex collision scenarios', () => {
+    it('should handle rapid tool call switching at same index', () => {
+      // Rapid switching between different tool calls at index 0
+      parser.addChunk(0, '{"step1":', 'call_1', 'function1');
+      parser.addChunk(0, ' "done"}', 'call_1', 'function1');
+
+      // New tool call immediately at same index
+      parser.addChunk(0, '{"step2":', 'call_2', 'function2');
+      parser.addChunk(0, ' "done"}', 'call_2', 'function2');
+
+      const completed = parser.getCompletedToolCalls();
+      expect(completed).toHaveLength(2);
+
+      const call1 = completed.find((tc) => tc.id === 'call_1');
+      const call2 = completed.find((tc) => tc.id === 'call_2');
+      expect(call1?.args).toEqual({ step1: 'done' });
+      expect(call2?.args).toEqual({ step2: 'done' });
+    });
+
+    it('should handle interleaved chunks from multiple tool calls with ID mapping', () => {
+      // Start tool call 1 at index 0
+      parser.addChunk(0, '{"param1":', 'call_1', 'function1');
+
+      // Start tool call 2 at index 1 (different index to avoid collision)
+      parser.addChunk(1, '{"param2":', 'call_2', 'function2');
+
+      // Continue tool call 1 at its index
+      const result1 = parser.addChunk(0, ' "value1"}');
+      expect(result1.complete).toBe(true);
+
+      // Continue tool call 2 at its index
+      const result2 = parser.addChunk(1, ' "value2"}');
+      expect(result2.complete).toBe(true);
+
+      const completed = parser.getCompletedToolCalls();
+      expect(completed).toHaveLength(2);
+
+      const call1 = completed.find((tc) => tc.id === 'call_1');
+      const call2 = completed.find((tc) => tc.id === 'call_2');
+      expect(call1?.args).toEqual({ param1: 'value1' });
+      expect(call2?.args).toEqual({ param2: 'value2' });
     });
   });
 });
