@@ -23,6 +23,8 @@ import { useAuthCommand } from './hooks/useAuthCommand.js';
 import { useQwenAuth } from './hooks/useQwenAuth.js';
 import { useFolderTrust } from './hooks/useFolderTrust.js';
 import { useEditorSettings } from './hooks/useEditorSettings.js';
+import { useQuitConfirmation } from './hooks/useQuitConfirmation.js';
+import { useWelcomeBack } from './hooks/useWelcomeBack.js';
 import { useSlashCommandProcessor } from './hooks/slashCommandProcessor.js';
 import { useAutoAcceptIndicator } from './hooks/useAutoAcceptIndicator.js';
 import { useMessageQueue } from './hooks/useMessageQueue.js';
@@ -40,6 +42,7 @@ import { QwenOAuthProgress } from './components/QwenOAuthProgress.js';
 import { EditorSettingsDialog } from './components/EditorSettingsDialog.js';
 import { FolderTrustDialog } from './components/FolderTrustDialog.js';
 import { ShellConfirmationDialog } from './components/ShellConfirmationDialog.js';
+import { QuitConfirmationDialog } from './components/QuitConfirmationDialog.js';
 import { RadioButtonSelect } from './components/shared/RadioButtonSelect.js';
 import { Colors } from './colors.js';
 import { loadHierarchicalGeminiMemory } from '../config/config.js';
@@ -103,6 +106,7 @@ import { SettingsDialog } from './components/SettingsDialog.js';
 import { setUpdateHandler } from '../utils/handleAutoUpdate.js';
 import { appEvents, AppEvent } from '../utils/events.js';
 import { isNarrowWidth } from './utils/isNarrowWidth.js';
+import { WelcomeBackDialog } from './components/WelcomeBackDialog.js';
 
 const CTRL_EXIT_PROMPT_DURATION_MS = 1000;
 // Maximum number of queued messages to display in UI to prevent performance issues
@@ -273,6 +277,9 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     settings,
     setIsTrustedFolder,
   );
+
+  const { showQuitConfirmation, handleQuitConfirmationSelect } =
+    useQuitConfirmation();
 
   const {
     isAuthDialogOpen,
@@ -550,6 +557,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     commandContext,
     shellConfirmationRequest,
     confirmationRequest,
+    quitConfirmationRequest,
   } = useSlashCommandProcessor(
     config,
     settings,
@@ -568,6 +576,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     toggleVimEnabled,
     setIsProcessing,
     setGeminiMdFileCount,
+    showQuitConfirmation,
   );
 
   const buffer = useTextBuffer({
@@ -607,6 +616,15 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     refreshStatic,
     () => cancelHandlerRef.current(),
   );
+
+  // Welcome back functionality
+  const {
+    welcomeBackInfo,
+    showWelcomeBackDialog,
+    welcomeBackChoice,
+    handleWelcomeBackSelection,
+    handleWelcomeBackClose,
+  } = useWelcomeBack(config, submitQuery);
 
   // Message queue for handling input during streaming
   const { messageQueue, addMessage, clearQueue, getQueuedMessagesText } =
@@ -687,6 +705,8 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
         handleSlashCommand('/quit');
       } else {
         setPressedOnce(true);
+        // Show quit confirmation dialog immediately on first Ctrl+C
+        handleSlashCommand('/quit-confirm');
         timerRef.current = setTimeout(() => {
           setPressedOnce(false);
           timerRef.current = null;
@@ -816,7 +836,8 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     (streamingState === StreamingState.Idle ||
       streamingState === StreamingState.Responding) &&
     !initError &&
-    !isProcessing;
+    !isProcessing &&
+    !showWelcomeBackDialog;
 
   const handleClearScreen = useCallback(() => {
     clearItems();
@@ -895,6 +916,8 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
       !isThemeDialogOpen &&
       !isEditorDialogOpen &&
       !showPrivacyNotice &&
+      !showWelcomeBackDialog &&
+      welcomeBackChoice !== 'restart' &&
       geminiClient?.isInitialized?.()
     ) {
       submitQuery(initialPrompt);
@@ -908,6 +931,8 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     isThemeDialogOpen,
     isEditorDialogOpen,
     showPrivacyNotice,
+    showWelcomeBackDialog,
+    welcomeBackChoice,
     geminiClient,
   ]);
 
@@ -1016,6 +1041,13 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
               ))}
             </Box>
           )}
+          {showWelcomeBackDialog && welcomeBackInfo?.hasHistory && (
+            <WelcomeBackDialog
+              welcomeBackInfo={welcomeBackInfo}
+              onSelect={handleWelcomeBackSelection}
+              onClose={handleWelcomeBackClose}
+            />
+          )}
 
           {shouldShowIdePrompt && currentIDE ? (
             <IdeIntegrationNudge
@@ -1024,6 +1056,17 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
             />
           ) : isFolderTrustDialogOpen ? (
             <FolderTrustDialog onSelect={handleFolderTrustSelect} />
+          ) : quitConfirmationRequest ? (
+            <QuitConfirmationDialog
+              onSelect={(choice) => {
+                const result = handleQuitConfirmationSelect(choice);
+                if (result?.shouldQuit) {
+                  quitConfirmationRequest.onConfirm(true, result.action);
+                } else {
+                  quitConfirmationRequest.onConfirm(false);
+                }
+              }}
+            />
           ) : shellConfirmationRequest ? (
             <ShellConfirmationDialog request={shellConfirmationRequest} />
           ) : confirmationRequest ? (

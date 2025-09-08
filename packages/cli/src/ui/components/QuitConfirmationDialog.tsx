@@ -1,0 +1,69 @@
+/**
+ * @license
+ * Copyright 2025 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { Box, Text } from 'ink';
+import React from 'react';
+import { Colors } from '../colors.js';
+import {
+  RadioButtonSelect,
+  RadioSelectItem,
+} from './shared/RadioButtonSelect.js';
+import { useKeypress } from '../hooks/useKeypress.js';
+
+export enum QuitChoice {
+  QUIT = 'quit',
+  SAVE_AND_QUIT = 'save_and_quit',
+  SUMMARY_AND_QUIT = 'summary_and_quit',
+}
+
+interface QuitConfirmationDialogProps {
+  onSelect: (choice: QuitChoice) => void;
+}
+
+export const QuitConfirmationDialog: React.FC<QuitConfirmationDialogProps> = ({
+  onSelect,
+}) => {
+  useKeypress(
+    (key) => {
+      if (key.name === 'escape') {
+        onSelect(QuitChoice.QUIT);
+      }
+    },
+    { isActive: true },
+  );
+
+  const options: Array<RadioSelectItem<QuitChoice>> = [
+    {
+      label: 'Quit immediately (/quit)',
+      value: QuitChoice.QUIT,
+    },
+    {
+      label: 'Generate summary and quit (/chat summary)',
+      value: QuitChoice.SUMMARY_AND_QUIT,
+    },
+    {
+      label: 'Save conversation and quit (/chat save)',
+      value: QuitChoice.SAVE_AND_QUIT,
+    },
+  ];
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={Colors.AccentYellow}
+      padding={1}
+      width="100%"
+      marginLeft={1}
+    >
+      <Box flexDirection="column" marginBottom={1}>
+        <Text>What would you like to do before exiting?</Text>
+      </Box>
+
+      <RadioButtonSelect items={options} onSelect={onSelect} isFocused />
+    </Box>
+  );
+};

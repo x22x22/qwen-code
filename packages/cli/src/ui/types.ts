@@ -121,6 +121,11 @@ export type HistoryItemQuit = HistoryItemBase & {
   duration: string;
 };
 
+export type HistoryItemQuitConfirmation = HistoryItemBase & {
+  type: 'quit_confirmation';
+  duration: string;
+};
+
 export type HistoryItemToolGroup = HistoryItemBase & {
   type: 'tool_group';
   tools: IndividualToolCallDisplay[];
@@ -154,6 +159,7 @@ export type HistoryItemWithoutId =
   | HistoryItemModelStats
   | HistoryItemToolStats
   | HistoryItemQuit
+  | HistoryItemQuitConfirmation
   | HistoryItemCompression;
 
 export type HistoryItem = HistoryItemWithoutId & { id: number };
@@ -169,6 +175,7 @@ export enum MessageType {
   MODEL_STATS = 'model_stats',
   TOOL_STATS = 'tool_stats',
   QUIT = 'quit',
+  QUIT_CONFIRMATION = 'quit_confirmation',
   GEMINI = 'gemini',
   COMPRESSION = 'compression',
 }
@@ -215,6 +222,12 @@ export type Message =
     }
   | {
       type: MessageType.QUIT;
+      timestamp: Date;
+      duration: string;
+      content?: string;
+    }
+  | {
+      type: MessageType.QUIT_CONFIRMATION;
       timestamp: Date;
       duration: string;
       content?: string;
