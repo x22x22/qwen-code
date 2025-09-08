@@ -14,6 +14,7 @@ import { ErrorMessage } from './messages/ErrorMessage.js';
 import { ToolGroupMessage } from './messages/ToolGroupMessage.js';
 import { GeminiMessageContent } from './messages/GeminiMessageContent.js';
 import { CompressionMessage } from './messages/CompressionMessage.js';
+import { SummaryMessage } from './messages/SummaryMessage.js';
 import { Box } from 'ink';
 import { AboutBox } from './AboutBox.js';
 import { StatsDisplay } from './StatsDisplay.js';
@@ -97,5 +98,6 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     {item.type === 'compression' && (
       <CompressionMessage compression={item.compression} />
     )}
+    {item.type === 'summary' && <SummaryMessage summary={item.summary} />}
   </Box>
 );

@@ -20,7 +20,11 @@ import {
   getProjectSummaryPrompt,
 } from '@qwen-code/qwen-code-core';
 import path from 'path';
-import { HistoryItemWithoutId, MessageType } from '../types.js';
+import {
+  HistoryItemWithoutId,
+  HistoryItemSummary,
+  MessageType,
+} from '../types.js';
 
 interface ChatDetail {
   name: string;
@@ -331,9 +335,12 @@ const summaryCommand: SlashCommand = {
       }
 
       // Show loading state
-      const pendingMessage = {
-        type: 'info' as const,
-        text: '🔄 Generating project summary...',
+      const pendingMessage: HistoryItemSummary = {
+        type: 'summary',
+        summary: {
+          isPending: true,
+          stage: 'generating',
+        },
       };
       ui.setPendingItem(pendingMessage);
 
@@ -377,8 +384,11 @@ const summaryCommand: SlashCommand = {
 
       // Update loading message to show saving progress
       ui.setPendingItem({
-        type: 'info' as const,
-        text: '💾 Saving project summary...',
+        type: 'summary',
+        summary: {
+          isPending: true,
+          stage: 'saving',
+        },
       });
 
       // Ensure .qwen directory exists
@@ -404,13 +414,14 @@ const summaryCommand: SlashCommand = {
 
       // Clear pending item and show success message
       ui.setPendingItem(null);
-      ui.addItem(
-        {
-          type: 'info' as const,
-          text: '✅ Project summary generated and saved to .qwen/PROJECT_SUMMARY.md',
+      const completedSummaryItem: HistoryItemSummary = {
+        type: 'summary',
+        summary: {
+          isPending: false,
+          stage: 'completed',
         },
-        Date.now(),
-      );
+      };
+      ui.addItem(completedSummaryItem, Date.now());
 
       return {
         type: 'message',

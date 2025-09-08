@@ -58,6 +58,11 @@ export interface CompressionProps {
   newTokenCount: number | null;
 }
 
+export interface SummaryProps {
+  isPending: boolean;
+  stage: 'generating' | 'saving' | 'completed';
+}
+
 export interface HistoryItemBase {
   text?: string; // Text content for user/gemini/info/error messages
 }
@@ -141,6 +146,11 @@ export type HistoryItemCompression = HistoryItemBase & {
   compression: CompressionProps;
 };
 
+export type HistoryItemSummary = HistoryItemBase & {
+  type: 'summary';
+  summary: SummaryProps;
+};
+
 // Using Omit<HistoryItem, 'id'> seems to have some issues with typescript's
 // type inference e.g. historyItem.type === 'tool_group' isn't auto-inferring that
 // 'tools' in historyItem.
@@ -160,7 +170,8 @@ export type HistoryItemWithoutId =
   | HistoryItemToolStats
   | HistoryItemQuit
   | HistoryItemQuitConfirmation
-  | HistoryItemCompression;
+  | HistoryItemCompression
+  | HistoryItemSummary;
 
 export type HistoryItem = HistoryItemWithoutId & { id: number };
 
@@ -178,6 +189,7 @@ export enum MessageType {
   QUIT_CONFIRMATION = 'quit_confirmation',
   GEMINI = 'gemini',
   COMPRESSION = 'compression',
+  SUMMARY = 'summary',
 }
 
 // Simplified message structure for internal feedback
@@ -235,6 +247,11 @@ export type Message =
   | {
       type: MessageType.COMPRESSION;
       compression: CompressionProps;
+      timestamp: Date;
+    }
+  | {
+      type: MessageType.SUMMARY;
+      summary: SummaryProps;
       timestamp: Date;
     };
 

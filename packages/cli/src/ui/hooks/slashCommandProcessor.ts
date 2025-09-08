@@ -157,6 +157,11 @@ export const useSlashCommandProcessor = (
           type: 'compression',
           compression: message.compression,
         };
+      } else if (message.type === MessageType.SUMMARY) {
+        historyItemContent = {
+          type: 'summary',
+          summary: message.summary,
+        };
       } else {
         historyItemContent = {
           type: message.type,
