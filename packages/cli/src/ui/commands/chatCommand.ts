@@ -351,7 +351,7 @@ const summaryCommand: SlashCommand = {
             role: 'user',
             parts: [
               {
-                text: '' + getProjectSummaryPrompt(),
+                text: getProjectSummaryPrompt(),
               },
             ],
           },
@@ -397,7 +397,7 @@ const summaryCommand: SlashCommand = {
 ---
 
 ## Summary Metadata
-**Generated**: ${new Date().toISOString()} This summary was automatically generated from the conversation history and is designed to provide comprehensive context for future development sessions.*
+**Update time**: ${new Date().toISOString()} 
 `;
 
       await fsPromises.writeFile(summaryPath, summaryContent, 'utf8');
