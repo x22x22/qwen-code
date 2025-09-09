@@ -66,10 +66,6 @@ export async function getProjectSummaryInfo(): Promise<ProjectSummaryInfo> {
     };
 
     const timeAgo = getTimeAgo(timestamp);
-    fs.writeFile(
-      'debug.md',
-      `timestamp: ${timestampMatch} \n${timestamp}\n timeAgo: ${timeAgo}\n`,
-    );
 
     // Parse Overall Goal section
     const goalSection = content.match(
