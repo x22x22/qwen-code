@@ -15,17 +15,21 @@ export interface WelcomeBackState {
   welcomeBackInfo: ProjectSummaryInfo | null;
   showWelcomeBackDialog: boolean;
   welcomeBackChoice: 'restart' | 'continue' | null;
+  shouldFillInput: boolean;
+  inputFillText: string | null;
 }
 
 export interface WelcomeBackActions {
   handleWelcomeBackSelection: (choice: 'restart' | 'continue') => void;
   handleWelcomeBackClose: () => void;
   checkWelcomeBack: () => Promise<void>;
+  clearInputFill: () => void;
 }
 
 export function useWelcomeBack(
   config: Config,
   submitQuery: (query: string) => void,
+  buffer: { setText: (text: string) => void },
 ): WelcomeBackState & WelcomeBackActions {
   const [welcomeBackInfo, setWelcomeBackInfo] =
     useState<ProjectSummaryInfo | null>(null);
@@ -33,6 +37,8 @@ export function useWelcomeBack(
   const [welcomeBackChoice, setWelcomeBackChoice] = useState<
     'restart' | 'continue' | null
   >(null);
+  const [shouldFillInput, setShouldFillInput] = useState(false);
+  const [inputFillText, setInputFillText] = useState<string | null>(null);
 
   // Check for conversation history on startup
   const checkWelcomeBack = useCallback(async () => {
@@ -55,25 +61,35 @@ export function useWelcomeBack(
       setShowWelcomeBackDialog(false);
 
       if (choice === 'continue' && welcomeBackInfo?.content) {
-        // Load conversation history as context
-        const contextMessage = `Based on our previous conversation, here's the current project status:
+        // Create the context message to fill in the input box
+        const contextMessage = `@.qwen/PROJECT_SUMMARY.md, Based on our previous conversation,Let's continue?`;
 
-${welcomeBackInfo.content}
-
-Let's continue where we left off. What would you like to work on next?`;
-
-        // Submit the context as the initial prompt
-        submitQuery(contextMessage);
+        // Set the input fill state instead of directly submitting
+        setInputFillText(contextMessage);
+        setShouldFillInput(true);
       }
       // If choice is 'restart', just close the dialog and continue normally
     },
-    [welcomeBackInfo, submitQuery],
+    [welcomeBackInfo],
   );
 
   const handleWelcomeBackClose = useCallback(() => {
     setWelcomeBackChoice('restart'); // Default to restart when closed
     setShowWelcomeBackDialog(false);
   }, []);
+
+  const clearInputFill = useCallback(() => {
+    setShouldFillInput(false);
+    setInputFillText(null);
+  }, []);
+
+  // Handle input filling from welcome back
+  useEffect(() => {
+    if (shouldFillInput && inputFillText) {
+      buffer.setText(inputFillText);
+      clearInputFill();
+    }
+  }, [shouldFillInput, inputFillText, buffer, clearInputFill]);
 
   // Check for welcome back on mount
   useEffect(() => {
@@ -85,9 +101,12 @@ Let's continue where we left off. What would you like to work on next?`;
     welcomeBackInfo,
     showWelcomeBackDialog,
     welcomeBackChoice,
+    shouldFillInput,
+    inputFillText,
     // Actions
     handleWelcomeBackSelection,
     handleWelcomeBackClose,
     checkWelcomeBack,
+    clearInputFill,
   };
 }
