@@ -624,7 +624,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     welcomeBackChoice,
     handleWelcomeBackSelection,
     handleWelcomeBackClose,
-  } = useWelcomeBack(config, submitQuery, buffer);
+  } = useWelcomeBack(config, submitQuery, buffer, settings.merged);
 
   // Message queue for handling input during streaming
   const { messageQueue, addMessage, clearQueue, getQueuedMessagesText } =

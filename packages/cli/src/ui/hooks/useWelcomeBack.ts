@@ -10,6 +10,7 @@ import {
   type ProjectSummaryInfo,
   type Config,
 } from '@qwen-code/qwen-code-core';
+import { type Settings } from '../../config/settingsSchema.js';
 
 export interface WelcomeBackState {
   welcomeBackInfo: ProjectSummaryInfo | null;
@@ -30,6 +31,7 @@ export function useWelcomeBack(
   config: Config,
   submitQuery: (query: string) => void,
   buffer: { setText: (text: string) => void },
+  settings: Settings,
 ): WelcomeBackState & WelcomeBackActions {
   const [welcomeBackInfo, setWelcomeBackInfo] =
     useState<ProjectSummaryInfo | null>(null);
@@ -42,6 +44,11 @@ export function useWelcomeBack(
 
   // Check for conversation history on startup
   const checkWelcomeBack = useCallback(async () => {
+    // Check if welcome back is enabled in settings
+    if (settings.enableWelcomeBack === false) {
+      return;
+    }
+
     try {
       const info = await getProjectSummaryInfo();
       if (info.hasHistory) {
@@ -52,7 +59,7 @@ export function useWelcomeBack(
       // Silently ignore errors - welcome back is not critical
       console.debug('Welcome back check failed:', error);
     }
-  }, []);
+  }, [settings.enableWelcomeBack]);
 
   // Handle welcome back dialog selection
   const handleWelcomeBackSelection = useCallback(
