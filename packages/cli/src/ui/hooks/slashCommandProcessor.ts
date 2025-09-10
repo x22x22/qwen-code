@@ -432,8 +432,10 @@ export const useSlashCommandProcessor = (
                           // Generate summary and then quit
                           handleSlashCommand('/chat summary')
                             .then(() => {
-                              // Wait for summary to complete, then quit
-                              handleSlashCommand('/quit');
+                              // Wait for user to see the summary result
+                              setTimeout(() => {
+                                handleSlashCommand('/quit');
+                              }, 1200);
                             })
                             .catch((error) => {
                               // If summary fails, still quit but show error
@@ -448,7 +450,10 @@ export const useSlashCommandProcessor = (
                                 },
                                 Date.now(),
                               );
-                              handleSlashCommand('/quit');
+                              // Give user time to see the error message
+                              setTimeout(() => {
+                                handleSlashCommand('/quit');
+                              }, 1000);
                             });
                         } else {
                           // Just quit immediately - trigger the actual quit action
@@ -483,7 +488,7 @@ export const useSlashCommandProcessor = (
                   setTimeout(async () => {
                     await runExitCleanup();
                     process.exit(0);
-                  }, 100);
+                  }, 1000);
                   return { type: 'handled' };
 
                 case 'submit_prompt':
