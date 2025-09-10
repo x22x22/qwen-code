@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2025 Qwen
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -30,7 +30,11 @@ export const SummaryMessage: React.FC<SummaryDisplayProps> = ({ summary }) => {
           return 'Processing summary...';
       }
     }
-    return 'Project summary generated and saved successfully!';
+    const baseMessage = 'Project summary generated and saved successfully!';
+    if (summary.filePath) {
+      return `${baseMessage} Saved to: ${summary.filePath}`;
+    }
+    return baseMessage;
   };
 
   const getIcon = () => {

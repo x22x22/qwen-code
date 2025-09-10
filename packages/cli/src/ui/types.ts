@@ -61,6 +61,7 @@ export interface CompressionProps {
 export interface SummaryProps {
   isPending: boolean;
   stage: 'generating' | 'saving' | 'completed';
+  filePath?: string; // Path to the saved summary file
 }
 
 export interface HistoryItemBase {

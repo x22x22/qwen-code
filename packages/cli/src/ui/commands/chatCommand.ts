@@ -419,6 +419,7 @@ const summaryCommand: SlashCommand = {
         summary: {
           isPending: false,
           stage: 'completed',
+          filePath: '.qwen/PROJECT_SUMMARY.md',
         },
       };
       ui.addItem(completedSummaryItem, Date.now());
@@ -426,7 +427,7 @@ const summaryCommand: SlashCommand = {
       return {
         type: 'message',
         messageType: 'info',
-        content: `Project summary generated and saved to .qwen/PROJECT_SUMMARY.md`,
+        content: '', // Empty content since we show the message in UI component
       };
     } catch (error) {
       // Clear pending item on error
