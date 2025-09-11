@@ -25,6 +25,7 @@ import { useFolderTrust } from './hooks/useFolderTrust.js';
 import { useEditorSettings } from './hooks/useEditorSettings.js';
 import { useQuitConfirmation } from './hooks/useQuitConfirmation.js';
 import { useWelcomeBack } from './hooks/useWelcomeBack.js';
+import { useDialogClose } from './hooks/useDialogClose.js';
 import { useSlashCommandProcessor } from './hooks/slashCommandProcessor.js';
 import { useAutoAcceptIndicator } from './hooks/useAutoAcceptIndicator.js';
 import { useMessageQueue } from './hooks/useMessageQueue.js';
@@ -108,7 +109,6 @@ import { appEvents, AppEvent } from '../utils/events.js';
 import { isNarrowWidth } from './utils/isNarrowWidth.js';
 import { WelcomeBackDialog } from './components/WelcomeBackDialog.js';
 
-const CTRL_EXIT_PROMPT_DURATION_MS = 1000;
 // Maximum number of queued messages to display in UI to prevent performance issues
 const MAX_DISPLAYED_QUEUED_MESSAGES = 3;
 
@@ -626,6 +626,25 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     handleWelcomeBackClose,
   } = useWelcomeBack(config, submitQuery, buffer, settings.merged);
 
+  // Dialog close functionality
+  const { closeAnyOpenDialog } = useDialogClose({
+    isThemeDialogOpen,
+    handleThemeSelect,
+    isAuthDialogOpen,
+    handleAuthSelect,
+    selectedAuthType: settings.merged.selectedAuthType,
+    isEditorDialogOpen,
+    exitEditorDialog,
+    isSettingsDialogOpen,
+    closeSettingsDialog,
+    isFolderTrustDialogOpen,
+    showPrivacyNotice,
+    setShowPrivacyNotice,
+    showWelcomeBackDialog,
+    handleWelcomeBackClose,
+    quitConfirmationRequest,
+  });
+
   // Message queue for handling input during streaming
   const { messageQueue, addMessage, clearQueue, getQueuedMessagesText } =
     useMessageQueue({
@@ -697,23 +716,52 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
       setPressedOnce: (value: boolean) => void,
       timerRef: ReturnType<typeof useRef<NodeJS.Timeout | null>>,
     ) => {
+      // Fast double-press: Direct quit (preserve user habit)
       if (pressedOnce) {
         if (timerRef.current) {
           clearTimeout(timerRef.current);
         }
-        // Directly invoke the central command handler.
+        // Exit directly without showing confirmation dialog
         handleSlashCommand('/quit');
-      } else {
-        setPressedOnce(true);
-        // Show quit confirmation dialog immediately on first Ctrl+C
-        handleSlashCommand('/quit-confirm');
-        timerRef.current = setTimeout(() => {
-          setPressedOnce(false);
-          timerRef.current = null;
-        }, CTRL_EXIT_PROMPT_DURATION_MS);
+        return;
       }
+
+      // First press: Prioritize cleanup tasks
+
+      // Special case: If quit-confirm dialog is open, Ctrl+C means "quit immediately"
+      if (quitConfirmationRequest) {
+        handleSlashCommand('/quit');
+        return;
+      }
+
+      // 1. Close other dialogs (highest priority)
+      if (closeAnyOpenDialog()) {
+        return; // Dialog closed, end processing
+      }
+
+      // 2. Cancel ongoing requests
+      if (streamingState === StreamingState.Responding) {
+        cancelOngoingRequest?.();
+        return; // Request cancelled, end processing
+      }
+
+      // 3. Clear input buffer (if has content)
+      if (buffer.text.length > 0) {
+        buffer.setText('');
+        return; // Input cleared, end processing
+      }
+
+      // All cleanup tasks completed, show quit confirmation dialog
+      handleSlashCommand('/quit-confirm');
     },
-    [handleSlashCommand],
+    [
+      handleSlashCommand,
+      quitConfirmationRequest,
+      closeAnyOpenDialog,
+      streamingState,
+      cancelOngoingRequest,
+      buffer,
+    ],
   );
 
   const handleGlobalKeypress = useCallback(
@@ -746,9 +794,6 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
         if (isAuthenticating) {
           return;
         }
-        if (!ctrlCPressedOnce) {
-          cancelOngoingRequest?.();
-        }
         handleExit(ctrlCPressedOnce, setCtrlCPressedOnce, ctrlCTimerRef);
       } else if (keyMatchers[Command.EXIT](key)) {
         if (buffer.text.length > 0) {
@@ -780,7 +825,6 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
       ctrlDTimerRef,
       handleSlashCommand,
       isAuthenticating,
-      cancelOngoingRequest,
     ],
   );
 
@@ -1247,7 +1291,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
                   )}
                   {ctrlCPressedOnce ? (
                     <Text color={Colors.AccentYellow}>
-                      Press Ctrl+C again to exit.
+                      Press Ctrl+C again to confirm exit.
                     </Text>
                   ) : ctrlDPressedOnce ? (
                     <Text color={Colors.AccentYellow}>
