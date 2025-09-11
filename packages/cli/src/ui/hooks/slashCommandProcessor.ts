@@ -434,7 +434,7 @@ export const useSlashCommandProcessor = (
                           setTimeout(() => handleSlashCommand('/quit'), 100);
                         } else if (action === 'summary_and_quit') {
                           // Generate summary and then quit
-                          handleSlashCommand('/chat summary')
+                          handleSlashCommand('/summary')
                             .then(() => {
                               // Wait for user to see the summary result
                               setTimeout(() => {

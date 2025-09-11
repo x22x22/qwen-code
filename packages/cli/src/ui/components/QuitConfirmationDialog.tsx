@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2025 Qwen
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -42,7 +42,7 @@ export const QuitConfirmationDialog: React.FC<QuitConfirmationDialogProps> = ({
       value: QuitChoice.QUIT,
     },
     {
-      label: 'Generate summary and quit (/chat summary)',
+      label: 'Generate summary and quit (/summary)',
       value: QuitChoice.SUMMARY_AND_QUIT,
     },
     {
