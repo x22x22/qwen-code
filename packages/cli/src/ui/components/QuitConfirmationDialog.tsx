@@ -14,6 +14,7 @@ import {
 import { useKeypress } from '../hooks/useKeypress.js';
 
 export enum QuitChoice {
+  CANCEL = 'cancel',
   QUIT = 'quit',
   SAVE_AND_QUIT = 'save_and_quit',
   SUMMARY_AND_QUIT = 'summary_and_quit',
@@ -29,7 +30,7 @@ export const QuitConfirmationDialog: React.FC<QuitConfirmationDialogProps> = ({
   useKeypress(
     (key) => {
       if (key.name === 'escape') {
-        onSelect(QuitChoice.QUIT);
+        onSelect(QuitChoice.CANCEL);
       }
     },
     { isActive: true },
@@ -47,6 +48,10 @@ export const QuitConfirmationDialog: React.FC<QuitConfirmationDialogProps> = ({
     {
       label: 'Save conversation and quit (/chat save)',
       value: QuitChoice.SAVE_AND_QUIT,
+    },
+    {
+      label: 'Cancel (stay in application)',
+      value: QuitChoice.CANCEL,
     },
   ];
 

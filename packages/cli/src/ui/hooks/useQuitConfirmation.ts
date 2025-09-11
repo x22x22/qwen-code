@@ -17,7 +17,9 @@ export const useQuitConfirmation = () => {
   const handleQuitConfirmationSelect = useCallback((choice: QuitChoice) => {
     setIsQuitConfirmationOpen(false);
 
-    if (choice === QuitChoice.QUIT) {
+    if (choice === QuitChoice.CANCEL) {
+      return { shouldQuit: false, action: 'cancel' };
+    } else if (choice === QuitChoice.QUIT) {
       return { shouldQuit: true, action: 'quit' };
     } else if (choice === QuitChoice.SAVE_AND_QUIT) {
       return { shouldQuit: true, action: 'save_and_quit' };
@@ -25,8 +27,8 @@ export const useQuitConfirmation = () => {
       return { shouldQuit: true, action: 'summary_and_quit' };
     }
 
-    // Default to quit if unknown choice
-    return { shouldQuit: true, action: 'quit' };
+    // Default to cancel if unknown choice
+    return { shouldQuit: false, action: 'cancel' };
   }, []);
 
   return {

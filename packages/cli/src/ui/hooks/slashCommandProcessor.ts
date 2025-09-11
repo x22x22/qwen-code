@@ -419,6 +419,10 @@ export const useSlashCommandProcessor = (
                   setQuitConfirmationRequest({
                     onConfirm: (shouldQuit: boolean, action?: string) => {
                       setQuitConfirmationRequest(null);
+                      if (!shouldQuit) {
+                        // User cancelled the quit operation - do nothing
+                        return;
+                      }
                       if (shouldQuit) {
                         if (action === 'save_and_quit') {
                           // First save conversation with auto-generated tag, then quit
