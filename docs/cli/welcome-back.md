@@ -97,8 +97,6 @@ The Welcome Back feature creates and uses:
 your-project/
 ├── .qwen/
 │   └── PROJECT_SUMMARY.md    # Generated project summary
-└── .qwen/
-    └── settings.json         # Optional project settings
 ```
 
 ### PROJECT_SUMMARY.md Format
@@ -133,65 +131,3 @@ The generated summary follows this structure:
 
 **Update time**: 2025-01-10T15:30:00.000Z
 ```
-
-## Best Practices
-
-### When to Use Project Summaries
-
-- **Long Development Sessions:** Generate summaries for complex, multi-day projects
-- **Team Collaboration:** Share project summaries with team members
-- **Context Switching:** Use when working on multiple projects
-- **Documentation:** Keep a record of important decisions and progress
-
-### Summary Generation Tips
-
-- **Regular Updates:** Run `/chat summary` periodically during long sessions
-- **Before Major Changes:** Generate summaries before significant refactoring
-- **End of Sessions:** Use "Generate summary and quit" when finishing work
-- **Milestone Completion:** Create summaries at project milestones
-
-## Troubleshooting
-
-### Welcome Back Not Appearing
-
-1. **Check Settings:** Ensure `enableWelcomeBack` is set to `true`
-2. **Verify Summary File:** Confirm `.qwen/PROJECT_SUMMARY.md` exists
-3. **File Permissions:** Ensure Qwen Code can read the summary file
-4. **Project Directory:** Make sure you're in the correct project directory
-
-### Summary Not Loading
-
-1. **File Format:** Verify the summary file is valid markdown
-2. **File Size:** Check if the file is too large or corrupted
-3. **Permissions:** Ensure read permissions on the summary file
-
-### Disable Welcome Back
-
-If you want to disable the feature:
-
-```json
-{
-  "enableWelcomeBack": false
-}
-```
-
-## Examples
-
-### Typical Workflow
-
-1. **Start Working:** Begin a new project or feature
-2. **Generate Summary:** After significant progress, run `/chat summary`
-3. **End Session:** Use Ctrl+C and choose "Generate summary and quit"
-4. **Return Later:** Next time you start Qwen Code in this project
-5. **Welcome Back:** Dialog appears with your previous context
-6. **Continue:** Choose "Continue previous conversation" to resume
-
-### Team Collaboration
-
-1. **Developer A:** Works on feature, generates summary
-2. **Developer B:** Starts Qwen Code in same project
-3. **Welcome Back:** Sees Developer A's progress and context
-4. **Continue:** Can pick up where Developer A left off
-
-This makes the Welcome Back feature particularly valuable for team environments where multiple developers might work on the same project.
-
