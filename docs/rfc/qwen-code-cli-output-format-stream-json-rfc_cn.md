@@ -205,7 +205,7 @@ CLI 参数在帮助信息中展示，且 `text` 模式沿用现有行为，保�
 }
 ```
 
-`event` 取值来自 `GeminiEventType`（`Finished`、`ChatCompressed`、`MaxSessionTurns` 等），`message` 为 UI 在 `useGeminiStream.ts` 中构造的提示文案。
+`event` 取值来自 `GeminiEventType`（`Finished`、`ChatCompressed`、`MaxSessionTurns` 等），`message` 为 UI 在 `useGeminiStream.ts` 中构造的提示文案。当用户或集成方触发 ESC 取消时，CLI 需发送 `event: "USER_CANCELLED"`、`message: "User cancelled the request."`，保持与 TUI 一致。
 
 ### 输入格式语义（Qwen 会话协议）
 
@@ -495,9 +495,31 @@ CLI 会使用提供的 `resolved` 值读取文件；若未提供则回退到 `ha
 
 - 结构化协议提供与实时提示类似的独立事件，不污染会话上下文：
   - 集成方可定期发送 `{"type":"heartbeat_request","session_id":"session-123"}`（可选携带 `prompt_id`）。
-  - CLI 以 `{"type":"result/heartbeat","session_id":"session-123","status":"ok","ts":1739430123}` 回复；亦可在后台主动推送相同事件。
-  - 若超过约定时间（例如 10 秒）未收到心跳响应，第三方可判定子进程已挂起并执行重启。
+- CLI 以 `{"type":"result/heartbeat","session_id":"session-123","status":"ok","ts":1739430123}` 回复；亦可在后台主动推送相同事件。
+- 若超过约定时间（例如 10 秒）未收到心跳响应，第三方可判定子进程已挂起并执行重启。
 - `@third-party/anthropics/claude-agent-sdk-python` 当前未实现心跳机制，需由本项目 CLI/SDK 自行补足；P1.1 实施时需定义默认间隔、超时策略及是否允许 SDK 自定义心跳频率。
+
+#### 实时中断（Escape 指令）
+
+- 结构化模式必须暴露与 TUI 相同的“终止当前响应”能力。TUI 通过 `useGeminiStream.ts` 中的 `useKeypress` 监听 ESC 键并调用 `cancelOngoingRequest`：该流程会中止 `AbortController`、记录 `ApiCancelEvent` 遥测、补齐 `pendingHistoryItem`，并向历史追加“Request cancelled.” 等提示。
+- 集成方可在任意时刻通过 STDIN 写入下述控制消息来触发相同行为：
+  ```jsonc
+  {
+    "type": "control/cancel",
+    "session_id": "session-123",
+    "prompt_id": "session-123########8",
+    "reason": "escape"
+  }
+  ```
+  - `session_id`: 必填，用于定位当前会话；
+  - `prompt_id`: 可选；若提供，CLI 仅当该 prompt 正在 `Responding`/`WaitingForConfirmation` 状态时才执行取消；缺省时默认取消最近一次启动的请求；
+  - `reason`: 预留枚举，当前固定为 `"escape"`，后续可扩展 `"keyboard_interrupt"`、`"timeout"` 等。
+- CLI 响应要求：
+  - 若存在可取消的流式请求，必须复用 `cancelOngoingRequest` 的逻辑：调用 `AbortController.abort()`、写入 `ApiCancelEvent`、冲刷 `pendingHistoryItem` 并重置补全状态。
+  - 立即向 STDOUT 输出 `{"type":"result/cancel","session_id":"session-123","prompt_id":"session-123########8","status":"ok","message":"Request cancelled."}`，便于第三方 UI 更新状态。
+  - 当底层流返回 `GeminiEventType.UserCancelled` 事件时，追加发送 `{"type":"x-qwen-session-event","event":"USER_CANCELLED","message":"User cancelled the request."}`，提示会话被中断。
+  - 若当前不存在可取消的请求，则响应 `{"type":"result/cancel","session_id":"session-123","status":"noop"}`，不再触发其它事件。
+- 双击 ESC 清空输入属于客户端自身的输入框逻辑；结构化模式下的集成方可在本地复用该交互，无需再向 CLI 发送额外消息。
 
 #### 双向控制通道
 

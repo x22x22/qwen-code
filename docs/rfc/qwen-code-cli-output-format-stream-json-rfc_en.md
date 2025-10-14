@@ -205,7 +205,7 @@ The CLI help text will document these flags. `text` mode retains the existing ex
 }
 ```
 
-`event` values derive from `GeminiEventType`. `message` matches the UI copy built in `useGeminiStream.ts`.
+`event` values derive from `GeminiEventType`. `message` matches the UI copy built in `useGeminiStream.ts`. When a user or integration issues ESC cancellation, the CLI must emit `event: "USER_CANCELLED"` together with `message: "User cancelled the request."` to stay aligned with the TUI UX.
 
 #### `x-qwen-ansi`
 
@@ -466,9 +466,31 @@ If `resolved` values are supplied, the CLI uses them directly to read files; oth
 
 - A separate event channel—similar to command hints—avoids polluting conversation history:
   - Integrators may periodically send `{"type":"heartbeat_request","session_id":"session-123"}` (optionally with `prompt_id`).
-  - The CLI responds with `{"type":"result/heartbeat","session_id":"session-123","status":"ok","ts":1739430123}`; it may also push such events proactively.
-  - If no heartbeat response arrives within an agreed window (e.g., 10 seconds), integrators can assume the subprocess is stuck and restart it.
+- The CLI responds with `{"type":"result/heartbeat","session_id":"session-123","status":"ok","ts":1739430123}`; it may also push such events proactively.
+- If no heartbeat response arrives within an agreed window (e.g., 10 seconds), integrators can assume the subprocess is stuck and restart it.
 - `@third-party/anthropics/claude-agent-sdk-python` currently lacks a heartbeat mechanism, so the CLI/SDK must implement it themselves in P1.1, defining default intervals, timeouts, and whether SDKs can customize the cadence.
+
+#### Real-Time Interrupts (Escape Command)
+
+- Structured mode must expose the same “cancel current response” capability as the TUI. In the TUI, `useGeminiStream.ts` listens for the Escape key and invokes `cancelOngoingRequest`, which aborts the `AbortController`, records an `ApiCancelEvent`, flushes any `pendingHistoryItem`, and pushes “Request cancelled.” into history.
+- Integrations can trigger the identical behavior at any time by writing this control message to STDIN:
+  ```jsonc
+  {
+    "type": "control/cancel",
+    "session_id": "session-123",
+    "prompt_id": "session-123########8",
+    "reason": "escape"
+  }
+  ```
+  - `session_id`: required; identifies which session to cancel.
+  - `prompt_id`: optional; if present the CLI cancels only when that prompt is currently in `Responding` / `WaitingForConfirmation`. If omitted, the most recent in-flight request is cancelled.
+  - `reason`: reserved enum; currently must be `"escape"` but can later expand to values like `"keyboard_interrupt"` or `"timeout"`.
+- CLI obligations:
+  - When a cancellable stream is active, reuse the same `cancelOngoingRequest` pipeline: call `AbortController.abort()`, emit the `ApiCancelEvent`, flush `pendingHistoryItem`, and reset completion state.
+  - Immediately write `{"type":"result/cancel","session_id":"session-123","prompt_id":"session-123########8","status":"ok","message":"Request cancelled."}` to STDOUT so SDKs can refresh their UI.
+  - When the underlying stream yields `GeminiEventType.UserCancelled`, also send `{"type":"x-qwen-session-event","event":"USER_CANCELLED","message":"User cancelled the request."}` to announce the interruption.
+  - If nothing is running, respond with `{"type":"result/cancel","session_id":"session-123","status":"noop"}` and take no further action.
+- Double-Escape clearing of the input buffer remains a local UX feature; integrations can mimic it client-side without involving the CLI.
 
 #### Bidirectional Control Channel
 
