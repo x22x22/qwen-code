@@ -5,13 +5,7 @@
 
 ## 设计说明
 
-本文档描述了 Qwen-Code Agent 框架的完整架构设计。设计已经过可行性稽核,关键发现:
-
-- ✅ **可行**: Worker 进程池、Python SDK 基础、Client SDKs
-- ⚠️ **需要大量工作**: IPC 协议(~500行)、控制协议(~300行)、Hooks 系统
-- 📝 **保留设计**: API 网关/协调器架构、SDK MCP 服务器(待评估实施优先级)
-- ✅ **已修正**: UI Components 采用 Backend Server 架构(见第2节详细说明)
-- ✅ **新增共享存储**: 集成 MinIO 作为跨组件对象存储层,支撑跨服务器文件协作
+本文档描述了 Qwen-Code Agent 框架的完整架构设计。
 
 ### 重要概念澄清
 
@@ -30,8 +24,6 @@
 - CLI 进程管理 (spawn/输出捕获)
 - 会话管理和 Worker 池管理
 - 认证系统 (JWT)
-
-注: 在之前的版本中,此组件也被称为 "协调器 (Orchestrator)" 或 "Backend Server",现统一为 "Qwen-Code Agent Server"。
 
 ## 完整系统架构
 
@@ -1364,19 +1356,19 @@ resources:
     memory: 8Gi
 ```
 
-## 实施路线图
+## 模块设计概述
 
-### 阶段 1: IPC 协议基础 (2-3 周) ⚠️
+### IPC 协议基础
 
 **目标**: 让 qwen-code CLI 支持 JSON Lines IPC 通信
 
-**前置条件**: 无
+**依赖**: 无
 
 **任务**:
 1. 扩展 CLI 参数解析: 支持 `--input-format {text,stream-json}` 与 `--output-format {text,stream-json,stream-chunk-json}`,结构化模式自动禁用 TUI。
-2. 实现 `StdinReaderService` (~200 行): 解析 `qwen-chat-request-schema` 请求,保留 `/`、`@`、`?` 命令即时反馈。
-3. 实现 `StdoutWriterService` (~150 行): 输出携带握手元数据的 `chat.completion` / `chat.completion.chunk` JSON Lines,统一错误语义。
-4. 改造 `main()` 入口 (~100 行): 初始化协议握手、分发 `result/*` 与 `control_request/control_response` 事件。
+2. 实现 `StdinReaderService`: 解析 `qwen-chat-request-schema` 请求,保留 `/`、`@`、`?` 命令即时反馈。
+3. 实现 `StdoutWriterService`: 输出携带握手元数据的 `chat.completion` / `chat.completion.chunk` JSON Lines,统一错误语义。
+4. 改造 `main()` 入口: 初始化协议握手、分发 `result/*` 与 `control_request/control_response` 事件。
 5. 补齐事件流: 实现 `result/heartbeat`、`result/cancel`、`x-qwen-session-event`、`control_request/control_response` 的内部管线。
 6. 编写 IPC 协议测试: 覆盖握手、结构化输入、chunk 输出与错误/控制事件。
 
@@ -1391,11 +1383,11 @@ echo '{"model":"qwen-coder","messages":[{"role":"user","content":"你好"}],"ses
 
 **风险**: 中等 - 需要对 qwen-code 核心流程进行改造
 
-### 阶段 2: Qwen-Code Agent Server (2 周) ✅
+### Qwen-Code Agent Server
 
-**目标**: 实现 `@qwen-agent/server` 独立可运行服务,用于 UI Components
+**目标**: 实现 `@qwen-agent/server` 独立可运行服务,用于 UI 组件
 
-**前置条件**: qwen-code 支持 `--prompt` 参数和 STDOUT 输出 (已满足)
+**依赖**: qwen-code 支持 `--prompt` 参数和 STDOUT 输出
 
 **任务**:
 1. 实现 WebSocket 服务器 (基于 ws)
@@ -1416,11 +1408,11 @@ qwen-server start --port 5008 --config ./qwen-server.config.js
 
 **风险**: 低 - 参考 Qwen-CLI-UI 和 Gemini-CLI-UI 实现
 
-### 阶段 3: React 组件库 (2 周) ✅
+### React 组件库
 
-**目标**: 实现 `@qwen-agent/react` 包
+**目标**: 实现 `@qwen-agent/react` 包,为 React 应用提供 UI 能力
 
-**前置条件**: 阶段 2 完成
+**依赖**: Qwen-Code Agent Server
 
 **任务**:
 1. 实现 `<QwenChat>` 组件
@@ -1438,11 +1430,11 @@ import { QwenChat } from '@qwen-agent/react';
 
 **风险**: 低 - Web 组件开发,技术成熟
 
-### 阶段 5: Python SDK 基础 (2 周) ✅
+### Python SDK 基础
 
 **目标**: 实现 `qwen-agent-client` Python 包
 
-**前置条件**: 阶段 1 完成 (IPC 协议)
+**依赖**: IPC 协议
 
 **任务**:
 1. 实现 `SubprocessCLITransport` (启动 CLI 子进程)
@@ -1458,13 +1450,13 @@ async with QwenClient() as client:
     response = await client.chat("你好")
 ```
 
-**风险**: 低 - 依赖阶段 1 完成
+**风险**: 低 - 依赖 IPC 协议完成
 
-### 阶段 6: 官方 Portal (2 周) ✅
+### 官方 Portal
 
 **目标**: 实现官方 Web UI (qwen-code-ui)
 
-**前置条件**: 阶段 2 (Backend Server SDK), 阶段 4 (Vue 组件库) 完成
+**依赖**: Qwen-Code Agent Server, Vue 组件库
 
 **技术栈**: Vue.js + Vite + Tailwind CSS
 
@@ -1479,11 +1471,11 @@ async with QwenClient() as client:
 
 **风险**: 低 - 基于已完成的 Vue 组件库
 
-### 阶段 7: 控制协议 (2-3 周) ⚠️
+### 控制协议
 
 **目标**: 实现权限回调和 Hooks 系统
 
-**前置条件**: 阶段 1 完成
+**依赖**: IPC 协议
 
 **任务**:
 1. 实现 `control_request` / `control_response` 消息
@@ -1502,11 +1494,11 @@ client = QwenClient(
 
 **风险**: 中等 - 需要改造工具执行流程
 
-### 阶段 8: Worker 进程池 (1-2 周) ✅
+### Worker 进程池
 
 **目标**: 实现 Worker 进程池管理
 
-**前置条件**: 阶段 1, 5 完成
+**依赖**: IPC 协议, Python SDK
 
 **任务**:
 1. 实现 `QwenWorkerPool` (进程池管理)
@@ -1524,11 +1516,11 @@ pool.release(worker)
 
 **风险**: 低 - Node.js 进程管理成熟
 
-### 阶段 9: 其他语言 SDK (可选, 2-4 周) ⏳
+### 其他语言 SDK
 
 **目标**: 实现 Node.js, Go, Java Client SDK
 
-**前置条件**: 阶段 5 (Python SDK) 完成
+**依赖**: Python SDK
 
 **任务**:
 1. 移植 Python SDK 到 Node.js
@@ -1539,132 +1531,65 @@ pool.release(worker)
 
 **风险**: 低 - 移植工作,逻辑已验证
 
-### 阶段 10: React 组件库 (可选, 1-2 周) ⏳
-
-**目标**: 实现 `@qwen-agent/react` 包 (对于使用 React 的第三方)
-
-**前置条件**: 阶段 2 (Backend Server SDK) 完成
-
-**任务**:
-1. 实现 `<QwenChat>` React 组件
-2. 实现 `<QwenFileTree>` React 组件
-3. 实现 `<QwenEditor>` React 组件 (Monaco/CodeMirror)
-4. 实现 `<QwenTerminal>` React 组件 (xterm.js)
-5. 实现 `<QwenProvider>` Context
-6. 编写 `@qwen-agent/react` npm 包
-
-**可交付成果**: React 组件库 (用于第三方 React 应用集成)
-
-**风险**: 低 - Web 组件开发,技术成熟
-
-## 阶段优先级说明
-
-### 核心阶段 (P0)
-- **阶段 1**: IPC 协议 - 其他高级功能的基础
-- **阶段 2**: Qwen-Code Agent Server - UI Components 的必需依赖 (独立可运行服务)
-- **阶段 4**: Vue 组件库 - Portal 的必需依赖
-- **阶段 5**: Python SDK - 编程集成的核心功能
-- **阶段 6**: 官方 Portal - 官方 Web UI
-
-### 扩展阶段 (P1)
-- **阶段 7**: 控制协议 - 高级权限控制
-- **阶段 8**: Worker 进程池 - 性能优化
-
-### 可选阶段 (P2)
-- **阶段 3**: React 组件库 (已移至阶段10) - 为第三方 React 应用提供
-- **阶段 9**: 其他语言 SDK - 多语言支持
-- **阶段 10**: React 组件库 - 可选,第三方 React 集成
-
-### 已调整的阶段顺序理由
-
-1. **Vue 组件库优先于 Portal**: Portal (官方 UI) 使用 Vue.js 开发,依赖 `@qwen-agent/vue`,因此必须先完成 Vue 组件库
-2. **React 组件库调整为可选**: 官方 Portal 不依赖 React,React 组件库主要用于第三方 React 应用集成,因此调整为可选阶段 (P2)
-3. **保持依赖关系**: 所有依赖关系保持清晰 (如 Python SDK 依赖 IPC 协议,Portal 依赖 Vue 组件库)
-
 ## 可行性总结
 
 ### 整体评估
 
-| 设计部分 | 可行性 | 工作量 | 风险 | 优先级 |
-|---------|--------|--------|------|--------|
-| **IPC 协议** | ⚠️ 可行 | 2-3 周 (~500 行) | 中等 | P0 (核心基础) |
-| **Qwen-Code Agent Server** | ✅ 完全可行 | 2 周 | 低 | P0 (UI 必需,独立服务) |
-| **Vue 组件库** | ✅ 完全可行 | 1-2 周 | 低 | P0 (Portal 必需) |
-| **Python SDK** | ✅ 完全可行 | 2 周 | 低 | P0 (核心功能) |
-| **Portal (Vue.js)** | ✅ 完全可行 | 2 周 | 低 | P0 (官方 UI) |
-| **Worker 进程池** | ✅ 完全可行 | 1-2 周 | 低 | P1 (性能优化) |
-| **控制协议** | ⚠️ 部分可行 | 2-3 周 (~300 行) | 中等 | P1 (高级功能) |
-| **API 网关/协调器** | 📝 保留设计 | TBD | TBD | P2 (待评估) |
-| **React 组件库** | ✅ 完全可行 | 1-2 周 | 低 | P2 (可选,第三方) |
-| **其他语言 SDK** | ✅ 完全可行 | 2-4 周 | 低 | P2 (可选) |
-| **SDK MCP 服务器** | 📝 保留设计 | TBD | 高 | P3 (待评估) |
-
-### 总工作量估算
-
-**核心功能** (P0):
-- IPC 协议: 2-3 周
-- Qwen-Code Agent Server (独立服务): 2 周
-- Vue 组件库: 1-2 周
-- Python SDK: 2 周
-- Portal (Vue.js): 2 周
-- **小计**: 9-11 周 (约 2-2.75 个月)
-
-**扩展功能** (P1):
-- Worker 进程池: 1-2 周
-- 控制协议: 2-3 周
-- **小计**: 3-5 周 (约 1-1.25 个月)
-
-**可选功能** (P2-P3):
-- React 组件库: 1-2 周
-- 其他语言 SDK: 2-4 周
-- **小计**: 3-6 周 (约 1-1.5 个月)
-
-**总计**: 15-22 周 (约 3.75-5.5 个月)
+| 设计部分 | 可行性 | 风险 |
+|---------|--------|------|
+| **IPC 协议** | ⚠️ 可行 | 中等 |
+| **Qwen-Code Agent Server** | ✅ 完全可行 | 低 |
+| **Vue 组件库** | ✅ 完全可行 | 低 |
+| **Python SDK** | ✅ 完全可行 | 低 |
+| **Portal (Vue.js)** | ✅ 完全可行 | 低 |
+| **Worker 进程池** | ✅ 完全可行 | 低 |
+| **控制协议** | ⚠️ 部分可行 | 中等 |
+| **API 网关/协调器** | 📝 保留设计 | TBD |
+| **React 组件库** | ✅ 完全可行 | 低 |
+| **其他语言 SDK** | ✅ 完全可行 | 低 |
+| **SDK MCP 服务器** | 📝 保留设计 | 高 |
 
 ### 关键依赖关系
 
 ```
-IPC 协议 (P0)
-  ├─→ Python SDK (P0)
-  │     └─→ Worker 进程池 (P1)
-  │     └─→ Node.js/Go/Java SDK (P2)
-  └─→ 控制协议 (P1)
+IPC 协议
+  ├─→ Python SDK
+  │     ├─→ Worker 进程池
+  │     └─→ Node.js/Go/Java SDK
+  └─→ 控制协议
 
-Backend Server SDK (P0)
-  ├─→ Vue 组件库 (P0)
-  │     └─→ Portal (P0) [Vue.js 实现]
-  └─→ React 组件库 (P2) [可选,第三方集成]
+Backend Server SDK
+  ├─→ Vue 组件库
+  │     └─→ Portal (Vue.js 实现)
+  └─→ React 组件库 (第三方集成)
   └─→ (独立于 IPC 协议,使用现有 --prompt 模式)
 ```
 
-### 实施建议
+## 实现要点
 
-1. **优先实施 Qwen-Code Agent Server + Vue 组件** (阶段 2, 4):
-   - 不依赖 IPC 协议
-   - 可快速交付 UI 能力 (Portal 必需)
-   - 已有成功案例验证 (Qwen-CLI-UI, Gemini-CLI-UI)
-   - Vue 组件库是 Portal 的直接依赖,必须优先完成
-   - Agent Server 是独立可运行的服务,不是 SDK
+1. **整合 Qwen-Code Agent Server 与 Vue 组件**:
+   - 不依赖 IPC 协议即可提供 UI 能力
+   - 参考 Qwen-CLI-UI 与 Gemini-CLI-UI 的服务模式
+   - Vue 组件库直接支撑 Portal 构建
 
-2. **官方 Portal 紧随其后** (阶段 6):
-   - 依赖 Qwen-Code Agent Server 和 Vue 组件库
-   - 提供完整的官方 Web UI
-   - 技术栈: Vue.js + Vite + Tailwind CSS
-   - 部署: 开发环境使用 Vite 反向代理,生产环境使用 Nginx 反向代理
+2. **官方 Portal 构建策略**:
+   - 复用 `@qwen-agent/vue` 提供的组件体系
+   - 通过 Vue.js + Vite + Tailwind CSS 实现完整 UI
+   - 部署建议: 开发环境采用 Vite 代理,生产环境使用 Nginx 反向代理
 
-3. **并行开发 IPC 协议** (阶段 1):
-   - 为 Python SDK 和高级功能做准备
-   - 工作量较大,需要专门投入
-   - 可与 Backend Server/Vue 组件开发并行进行
+3. **巩固 IPC 协议能力**:
+   - 协议为 Python SDK 与高级功能提供基础
+   - CLI 需要完整的握手、结构化输入与错误语义
+   - 控制协议和 Worker 池直接复用该事件流
 
-4. **分阶段验证**:
-   - 每个阶段完成后进行集成测试
-   - 确保新功能不破坏现有能力
+4. **模块完成后执行集成验证**:
+   - 每个模块完成后进行端到端联调
+   - 保证新增能力不会破坏既有行为
 
-5. **保留设计的处理**:
-   - API 网关: 待 P0/P1 完成后评估必要性
-   - SDK MCP 服务器: 技术难度较高,暂不实施
-   - React 组件库: 调整为可选 (P2),仅用于第三方 React 应用集成
+5. **保留设计的处理策略**:
+   - API 网关在核心能力稳定后再评估
+   - SDK MCP 服务器因技术难度较高暂缓
+   - React 组件库作为第三方集成的可选方案
 
 ## 参考资料
 
