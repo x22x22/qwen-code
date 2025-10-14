@@ -1003,7 +1003,7 @@ export interface QwenChatProps {
 - **RPC 模式 (默认)**: 通过 HTTP/WebSocket 与 Qwen-Code Agent Server 通信,适合集中式部署、需要统一认证与共享存储的 SaaS 场景。
 - **IPC 模式 (新增)**: SDK 启动本地 `qwen` 子进程,以 JSON Lines 协议进行进程间通信,无需部署 Agent Server,适合 IDE 插件、企业内网脚本、桌面客户端等同机集成。
 
-> 📘 IPC 模式的协议与多语言实现详见《qwen-code-ipc-sdk-integration.md》。
+> 📘 IPC 模式的协议与最新 CLI IPC 草案详见《qwen-code-cli-output-format-stream-json-rfc_cn.md》。
 
 **集成方式**:
 ```python
@@ -1077,15 +1077,17 @@ location /api/ {
 协调器与 Worker 进程之间的通信层。
 
 - **IPC 封装** (⚠️ 需新增约 500 行):
-  - 基于匿名管道 (STDIN/STDOUT) 的 JSONL 协议
-  - 支持流式输出和双向通信
-  - 消息类型:`user`、`assistant`、`result`、`control_request/response`
+  - 基于 STDIN/STDOUT 的 JSON Lines 协议,输入遵循 `docs/ipc/qwen-chat-request-schema.json`(扩展自 OpenAI `/chat/completions`,包含 `session_id`、`prompt_id`、`tool_call_id` 等会话字段)。
+  - CLI 需提供 `--input-format {text,stream-json}` 与 `--output-format {text,stream-json,stream-chunk-json}` 参数,结构化模式自动禁用 TUI,仅 `text` 模式保留原有人机交互。
+  - 输出逐行写入 OpenAI 风格的 `chat.completion` / `chat.completion.chunk` 对象;首条响应需携带 `metadata.capabilities`、`metadata.protocol_version`、`output_format` 等握手信息。
+  - 事件语义需覆盖 `result/heartbeat`、`result/cancel`、`x-qwen-session-event` 与 `control_request/control_response`,并定义对应的错误对象与回退策略。
   - **当前状态**: qwen-code 仅支持简单的 STDIN 文本读取 (非 JSON Lines)
   - **需要工作**:
-    - 新增 `StdinReaderService` (~200 行): JSON Lines 解析器
-    - 新增 `StdoutWriterService` (~150 行): JSON Lines 输出
-    - 改造 `main()` 入口支持流式模式 (~100 行)
-    - 新增 `--output-format` 和 `--input-format` CLI 参数
+    - 新增 `StdinReaderService` (~200 行): 解析结构化请求并保持 `/`、`@`、`?` 命令的即时回执。
+    - 新增 `StdoutWriterService` (~150 行): 输出 `chat.completion` / `chat.completion.chunk` JSON Lines,封装错误语义。
+    - 改造 `main()` 入口支持握手元数据、事件分发与流式模式 (~100 行)。
+    - 扩展 CLI 参数解析,落实完整格式选项及 TUI 自动禁用逻辑。
+    - 实现 `result/heartbeat`、`result/cancel`、`x-qwen-session-event`、`control_request/control_response` 的调度骨架。
 
 - **进程管理** (✅ 可行):
   - Worker 进程启动、监控、异常重启
@@ -1371,17 +1373,20 @@ resources:
 **前置条件**: 无
 
 **任务**:
-1. 新增 CLI 参数: `--output-format stream-json`, `--input-format stream-json`
-2. 实现 `StdinReaderService` (~200 行): JSON Lines 解析器
-3. 实现 `StdoutWriterService` (~150 行): JSON Lines 输出
-4. 改造 `main()` 函数支持 IPC 模式 (~100 行)
-5. 实现消息类型系统: `user`, `assistant`, `result`, `system`
-6. 编写 IPC 协议测试
+1. 扩展 CLI 参数解析: 支持 `--input-format {text,stream-json}` 与 `--output-format {text,stream-json,stream-chunk-json}`,结构化模式自动禁用 TUI。
+2. 实现 `StdinReaderService` (~200 行): 解析 `qwen-chat-request-schema` 请求,保留 `/`、`@`、`?` 命令即时反馈。
+3. 实现 `StdoutWriterService` (~150 行): 输出携带握手元数据的 `chat.completion` / `chat.completion.chunk` JSON Lines,统一错误语义。
+4. 改造 `main()` 入口 (~100 行): 初始化协议握手、分发 `result/*` 与 `control_request/control_response` 事件。
+5. 补齐事件流: 实现 `result/heartbeat`、`result/cancel`、`x-qwen-session-event`、`control_request/control_response` 的内部管线。
+6. 编写 IPC 协议测试: 覆盖握手、结构化输入、chunk 输出与错误/控制事件。
 
 **可交付成果**:
 ```bash
-echo '{"type":"user","message":{"role":"user","content":"你好"}}' | \
-  qwen --output-format stream-json --input-format stream-json
+echo '{"model":"qwen-coder","messages":[{"role":"user","content":"你好"}],"session_id":"demo-session-1"}' | \
+  qwen --input-format stream-json --output-format stream-json
+
+# 预期输出(逐行 JSON Lines)
+{"object":"chat.completion","id":"chatcmpl-demo","created":1739430000,"model":"qwen-coder","metadata":{"protocol_version":"1.0","capabilities":{"output_format":"stream-json"}},"choices":[{"index":0,"message":{"role":"assistant","content":"收到,开始处理。"},"finish_reason":"stop"}]}
 ```
 
 **风险**: 中等 - 需要对 qwen-code 核心流程进行改造
