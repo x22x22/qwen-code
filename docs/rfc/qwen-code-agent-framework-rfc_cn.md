@@ -9,155 +9,104 @@
 
 ### 重要概念澄清
 
-**核心组件: Qwen-Code Agent Server**
+**核心组件: Qwen-Code Agent SDK**
 
-本框架的核心服务组件统一命名为 **Qwen-Code Agent Server**:
+文档聚焦于 **Qwen-Code Agent SDK** 的设计,它以内嵌运行时的形式为各语言客户端提供统一的会话编排、进程管理与上下文控制能力。
 
 - **作用**:
-  - 作为前端和 CLI 之间的服务器
-  - 协调和管理会话、Worker 池
-  - 提供 WebSocket 和 RESTful API
-- **实现**: 对应 `@qwen-agent/server` npm 包
+  - 在宿主应用进程内封装会话路由、上下文管理与控制协议
+  - 负责 Worker 池的生命周期、健康检查与调度
+  - 提供一致的 IPC/JSONL 抽象,屏蔽 CLI 细节
+- **形态**: 以 `@qwen-agent/sdk` (Node.js) 与多语言 bindings (Python / Go / Java / Node.js) 发布
 
 核心功能:
-- WebSocket 服务器和 RESTful API
-- CLI 进程管理 (spawn/输出捕获)
-- 会话管理和 Worker 池管理
-- 认证系统 (JWT)
+- 会话编排与上下文聚合
+- CLI 子进程生命周期与资源治理
+- 控制协议 Hook / 权限判定
+- 观察性数据采集 (日志、指标、追踪)
 
 ## 完整系统架构
 
 ```mermaid
-flowchart TB
-    subgraph Portal["Qwen-Code UI (Portal)"]
-        PortalUI["官方 Web 界面<br/>Vue.js 实现<br/>依赖 @qwen-agent/vue"]
+flowchart LR
+    subgraph Clients["第三方应用 / 服务"]
+        direction LR
+        PythonSDK["qwen-agent-client<br/>Python"]
+        GoSDK["qwen-agent-client<br/>Go"]
+        JavaSDK["qwen-agent-client<br/>Java"]
+        NodeSDK["qwen-agent-client<br/>Node.js"]
     end
 
-    subgraph UIComponents["Qwen-Code Agent UI Components"]
-        ReactComp["@qwen-agent/react<br/>React 组件库"]
-        VueComp["@qwen-agent/vue<br/>Vue 组件库"]
-    end
-
-    subgraph ClientSDK["Qwen-Code Agent Client SDK"]
-        PythonClientSDK["qwen-agent-client<br/>Python SDK"]
-        JavaClientSDK["qwen-agent-client<br/>Java SDK"]
-        GoClientSDK["qwen-agent-client<br/>Go SDK"]
-    end
-
-    subgraph Gateway["API 网关 / Nginx"]
-        CORS["跨域处理 CORS"]
-        Auth["认证鉴权<br/>API Key / JWT"]
-        LoadBalancer["负载均衡"]
-    end
-
-    subgraph AgentServer["Qwen-Code Agent Server"]
-        Router["路由分发<br/>会话路由 / 负载均衡"]
-        SessionMgr["会话管理<br/>会话创建 / 状态跟踪 / 会话结束"]
+    subgraph AgentRuntime["Qwen-Code Agent SDK Runtime"]
+        direction TB
+        Router["会话编排<br/>路由 / 负载均衡"]
         ContextMgr["上下文管理<br/>历史聚合 / 权限策略"]
+        ControlPlane["控制协议<br/>Hook / 权限判定"]
+        ProcessMgr["进程管理<br/>启动 / 监控 / 重启"]
+        IPC["IPC 适配层<br/>STDIN/STDOUT JSONL"]
         WorkerPool["Worker 池管理<br/>分配 / 回收 / 健康检查"]
     end
 
-    subgraph AgentSDK["Qwen-Code Agent SDK (内部)"]
-        IPC["IPC 封装<br/>STDIN/STDOUT JSONL"]
-        ProcessMgr["进程管理<br/>启动 / 监控 / 重启"]
-        ControlProto["控制协议<br/>工具权限 / Hook 回调"]
-    end
-
-    subgraph WorkersPool["Qwen-Code Workers 进程池"]
+    subgraph Workers["Qwen-Code Workers"]
         direction LR
-        Worker1["Worker #1<br/>状态: 空闲/占用<br/>当前会话: session_123"]
-        Worker2["Worker #2<br/>状态: 空闲/占用<br/>当前会话: null"]
-        WorkerN["Worker #N<br/>状态: 空闲/占用<br/>当前会话: session_456"]
+        Worker1["Worker #1<br/>绑定 CLI"]
+        Worker2["Worker #2<br/>绑定 CLI"]
+        WorkerN["Worker #N"]
     end
 
-    subgraph Sandbox1["容器沙箱 #1"]
-        CLI1["qwen-code CLI<br/>会话: session_123<br/>STDIN/STDOUT 通道"]
-        Tools1["工具桥接<br/>MCP / IO 代理"]
-        Runtime1["隔离运行时<br/>cgroup / seccomp"]
-        CLI1 --> Tools1
-        Tools1 --> Runtime1
-    end
-
-    subgraph Sandbox2["容器沙箱 #2"]
-        CLI2["qwen-code CLI<br/>会话: null (空闲)<br/>STDIN/STDOUT 通道"]
-        Tools2["工具桥接<br/>MCP / IO 代理"]
-        Runtime2["隔离运行时<br/>cgroup / seccomp"]
-        CLI2 --> Tools2
-        Tools2 --> Runtime2
-    end
-
-    subgraph SandboxN["容器沙箱 #N"]
-        CLIN["qwen-code CLI<br/>会话: session_456<br/>STDIN/STDOUT 通道"]
-        ToolsN["工具桥接<br/>MCP / IO 代理"]
-        RuntimeN["隔离运行时<br/>cgroup / seccomp"]
-        CLIN --> ToolsN
-        ToolsN --> RuntimeN
+    subgraph Sandboxes["容器沙箱"]
+        direction LR
+        Sandbox1["沙箱 #1<br/>CLI + 工具桥接"]
+        Sandbox2["沙箱 #2"]
+        SandboxN["沙箱 #N"]
     end
 
     subgraph Services["外围服务"]
         MCP["MCP 服务"]
-        Monitor["监控告警<br/>Prometheus / Grafana"]
-        Logger["日志聚合<br/>ELK / Loki"]
-        Trace["链路追踪<br/>Jaeger / Zipkin"]
+        Monitor["监控告警"]
+        Logger["日志聚合"]
+        Trace["链路追踪"]
     end
 
     subgraph Storage["共享存储"]
-        MinIO["MinIO<br/>对象存储<br/>会话文件 / 第三方共享"]
+        MinIO["MinIO<br/>会话文件 / 共享数据"]
     end
 
-    %% 连接关系
-    PortalUI --> Gateway
-    ReactComp --> Gateway
-    VueComp --> Gateway
-    PythonClientSDK --> Gateway
-    JavaClientSDK --> Gateway
-    GoClientSDK --> Gateway
+    Clients --> Router
+    Router --> ContextMgr
+    Router --> WorkerPool
+    ContextMgr --> ControlPlane
+    ControlPlane --> IPC
+    IPC --> ProcessMgr
+    ProcessMgr --> WorkerPool
+    WorkerPool --> Worker1
+    WorkerPool --> Worker2
+    WorkerPool --> WorkerN
 
-    Gateway --> AgentServer
+    Worker1 --> Sandbox1
+    Worker2 --> Sandbox2
+    WorkerN --> SandboxN
 
-    Router --> SessionMgr
-    SessionMgr --> ContextMgr
-    SessionMgr --> WorkerPool
+    Sandbox1 --> MCP
+    Sandbox2 --> MCP
+    SandboxN --> MCP
 
-    WorkerPool --> AgentSDK
-    AgentSDK --> Worker1
-    AgentSDK --> Worker2
-    AgentSDK --> WorkerN
-
-    Worker1 -.->|独占绑定| Sandbox1
-    Worker2 -.->|空闲等待| Sandbox2
-    WorkerN -.->|独占绑定| SandboxN
-
-    Tools1 --> MCP
-    Tools2 --> MCP
-    ToolsN --> MCP
-
-    AgentServer --> Monitor
-    AgentServer --> Logger
-    AgentServer --> Trace
-    AgentServer --> MinIO
+    Router --> Monitor
+    Router --> Logger
+    Router --> Trace
     WorkerPool --> MinIO
 
-    %% 样式 - 暗色/亮色主题友好配色
-    classDef portalStyle fill:#4a90e2,stroke:#2c5aa0,stroke-width:3px,color:#fff
-    classDef uiStyle fill:#9b59b6,stroke:#6c3483,stroke-width:2px,color:#fff
-    classDef sdkStyle fill:#e67e22,stroke:#ba6c1e,stroke-width:2px,color:#fff
-    classDef gatewayStyle fill:#27ae60,stroke:#1e8449,stroke-width:2px,color:#fff
-    classDef orchestratorStyle fill:#f39c12,stroke:#ca7e08,stroke-width:3px,color:#fff
-    classDef agentSDKStyle fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
-    classDef workerStyle fill:#16a085,stroke:#138d75,stroke-width:2px,color:#fff
-    classDef sandboxStyle fill:#7f8c8d,stroke:#5d6d7e,stroke-width:1px,color:#fff
-    classDef serviceStyle fill:#95a5a6,stroke:#707b7c,stroke-width:1px,color:#fff
-    classDef storageStyle fill:#2c3e50,stroke:#1a252f,stroke-width:2px,color:#fff
+    classDef clientStyle fill:#e67e22,stroke:#ba6c1e,color:#fff
+    classDef runtimeStyle fill:#f39c12,stroke:#ca7e08,color:#fff
+    classDef workerStyle fill:#16a085,stroke:#138d75,color:#fff
+    classDef sandboxStyle fill:#7f8c8d,stroke:#5d6d7e,color:#fff
+    classDef serviceStyle fill:#95a5a6,stroke:#707b7c,color:#fff
+    classDef storageStyle fill:#2c3e50,stroke:#1a252f,color:#fff
 
-    class Portal,PortalUI portalStyle
-    class UIComponents,ReactComp,VueComp uiStyle
-    class ClientSDK,PythonClientSDK,JavaClientSDK,GoClientSDK sdkStyle
-    class Gateway,CORS,Auth,LoadBalancer gatewayStyle
-    class AgentServer,Router,SessionMgr,ContextMgr,WorkerPool orchestratorStyle
-    class AgentSDK,IPC,ProcessMgr,ControlProto agentSDKStyle
-    class WorkersPool,Worker1,Worker2,WorkerN workerStyle
-    class Sandbox1,Sandbox2,SandboxN,CLI1,CLI2,CLIN,Tools1,Tools2,ToolsN,Runtime1,Runtime2,RuntimeN sandboxStyle
+    class Clients,PythonSDK,GoSDK,JavaSDK,NodeSDK clientStyle
+    class AgentRuntime,Router,ContextMgr,ControlPlane,ProcessMgr,IPC,WorkerPool runtimeStyle
+    class Workers,Worker1,Worker2,WorkerN workerStyle
+    class Sandboxes,Sandbox1,Sandbox2,SandboxN sandboxStyle
     class Services,MCP,Monitor,Logger,Trace serviceStyle
     class Storage,MinIO storageStyle
 ```
@@ -186,11 +135,11 @@ flowchart LR
     end
 
     subgraph Playback["回放层"]
-        Player["asciinema-player<br/>(Web 组件)"]
-        Portal["Portal UI"]
+        Player["asciinema-player<br/>(调试组件)"]
+        Tooling["调试工具 / IDE 面板"]
         AsciicastFile --> Player
         SessionDB --> Player
-        Player --> Portal
+        Player --> Tooling
     end
 
     classDef recordStyle fill:#e67e22,stroke:#ba6c1e,stroke-width:2px,color:#fff
@@ -199,14 +148,14 @@ flowchart LR
 
     class Recording,CLI,Recorder recordStyle
     class Storage,AsciicastFile,SessionDB storageStyle
-    class Playback,Player,Portal playbackStyle
+    class Playback,Player,Tooling playbackStyle
 ```
 
 #### 工作流程
 
 **1. 录制阶段**:
 ```bash
-# Qwen-Code Agent Server 启动 CLI 时自动录制
+# Agent SDK 启动 CLI 时自动录制
 asciinema rec --stdin --title "Session: session_123" \
   --command "qwen --prompt 'Fix the bug in main.py'" \
   sessions/session_123.cast
@@ -232,9 +181,9 @@ asciinema rec --stdin --title "Session: session_123" \
 [2.5, "o", "Done!\n"]
 ```
 
-**3. 回放集成** (Portal UI):
+**3. 回放集成** (IDE / CLI):
 ```typescript
-// Portal 中集成 asciinema-player
+// 调试面板中集成 asciinema-player
 import { AsciinemaPlayer } from 'asciinema-player';
 
 <AsciinemaPlayer
@@ -255,29 +204,8 @@ import { AsciinemaPlayer } from 'asciinema-player';
 | **自动录制** | 每个会话自动录制终端输出 | asciinema rec + CLI wrapper |
 | **精确回放** | 按时间戳精确还原执行过程 | .cast 文件 + asciinema-player |
 | **速度控制** | 支持暂停、快进、倍速播放 | asciinema-player 内置功能 |
-| **文本搜索** | 在录制内容中搜索文本 | Portal 自定义搜索功能 |
-| **下载分享** | 导出 .cast 文件或生成分享链接 | RESTful API |
-
-#### API 端点
-
-```typescript
-// 获取会话录制
-GET /api/sessions/{sessionId}/recording
-Response: .cast 文件 (application/json)
-
-// 获取会话录制元数据
-GET /api/sessions/{sessionId}/recording/metadata
-Response: {
-  "sessionId": "session_123",
-  "duration": 15.2,
-  "size": 45678,
-  "createdAt": "2025-10-10T10:30:00Z"
-}
-
-// 下载会话录制
-GET /api/sessions/{sessionId}/recording/download
-Response: session_123.cast 文件下载
-```
+| **文本搜索** | 在录制内容中搜索文本 | 本地工具链 (grep / jq) |
+| **下载分享** | 导出 .cast 文件或生成分享链接 | 对象存储 / 共享文件夹 |
 
 #### 存储策略
 
@@ -316,664 +244,18 @@ recording:
 ### 完整组件构成
 
 ```
-qwen-code-agent-framework =
-    qwen-code-ui (Portal)
-    + qwen-code-agent-ui-components (Vue/React)
-    + qwen-code-agent-client-sdk (Python/Java/Go)
-    + qwen-code-agent-server (核心服务)
-    + qwen-code-agent-sdk (内部)
+qwen-code-agent-sdk =
+    qwen-code-agent-client-sdk (Python/Go/Java/Node)
+    + qwen-code-agent-sdk (内部编排层)
     + qwen-code-workers (进程池/实例)
+    + sandbox-runtime (容器沙箱)
     + minio-object-storage (共享对象存储)
+    + observability-stack (监控 / 日志 / 追踪)
 ```
 
 ## 关键组件说明
 
-### 1. Qwen-Code UI (Portal)
-- **官方 Web 界面**:基于 **Vue.js** 构建的完整 Web 应用,提供开箱即用的 Agent 交互界面。
-- **技术栈**: Vue.js + Vite + Tailwind CSS
-- **组件依赖**: 依赖 `@qwen-agent/vue` 组件库
-- **功能特性**:代码编辑、终端交互、文件浏览、会话管理、任务监控等完整功能。
-- **部署方式**:可独立部署,通过 Nginx 网关访问后端 API,或直接连接 Backend Server。
-
-### 2. Qwen-Code Agent UI Components
-
-> **✅ 可行性确认**: 已通过实际案例验证(Qwen-CLI-UI、Gemini-CLI-UI)
-> **架构说明**: UI Components 通过 Qwen-Code Agent Server 与 CLI 交互,不依赖 Ink 组件
-
-#### 2.1 架构模式
-
-UI Components 采用三层架构:
-
-```
-┌─────────────────────────────────────┐
-│   Frontend (React/Vue Web 组件)     │
-│   - QwenChat                        │
-│   - QwenFileTree                    │
-│   - QwenEditor                      │
-└─────────────┬───────────────────────┘
-              │ 相对路径 /api
-              │ (开发: Webpack/Vite 代理)
-              │ (生产: Nginx 反向代理)
-              ▼
-┌─────────────────────────────────────┐
-│   Qwen-Code Agent Server            │
-│   (独立可运行服务)                    │
-│   - WebSocket 服务器                 │
-│   - RESTful API                     │
-│   - CLI 进程管理                     │
-└─────────────┬───────────────────────┘
-              │ child_process.spawn()
-              ▼
-┌─────────────────────────────────────┐
-│   qwen-code CLI (子进程)            │
-│   - --prompt 参数接收输入             │
-│   - STDOUT 输出结果                  │
-└─────────────────────────────────────┘
-```
-
-**关键点**:
-- ✅ **UI Components 是全新的 React/Vue Web 组件**,不复用 qwen-code 的 Ink 组件
-- ✅ **Qwen-Code Agent Server 作为独立服务**,负责 CLI 进程管理和输出捕获
-- ✅ **利用现有非交互式模式**: qwen-code 已支持 `--prompt` 参数和 STDOUT 输出
-- ✅ **反向代理部署**: 前端通过相对路径访问后端,不直接指定后端地址
-
-#### 2.2 组件库设计
-
-- **React 组件库** (`@qwen-agent/react`):
-  - 提供 `<QwenChat>`、`<QwenFileTree>`、`<QwenEditor>`、`<QwenTerminal>` 等组件
-  - 通过 WebSocket 与 Qwen-Code Agent Server 通信
-  - 适用于第三方 React 应用集成
-
-- **Vue 组件库** (`@qwen-agent/vue`):
-  - 提供对应的 Vue 3 Composition API 组件
-  - 同样通过 WebSocket 与 Qwen-Code Agent Server 通信
-  - 适用于第三方 Vue 应用集成
-
-- **Qwen-Code Agent Server** (`@qwen-agent/server`):
-  - **独立可运行的服务** (不是 SDK)
-  - 通过 CLI 启动: `npx @qwen-agent/server start`
-  - CLI 进程管理 (spawn、输出捕获、进程池)
-  - WebSocket 服务器 + RESTful API
-  - 认证系统 (JWT)
-
-**集成方式**:
-
-**开发环境配置** (Vite 反向代理):
-```typescript
-// vite.config.js
-export default {
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:5008',
-        changeOrigin: true,
-        ws: true  // WebSocket 支持
-      }
-    }
-  }
-}
-```
-
-**前端组件使用** (相对路径):
-```jsx
-// Frontend: 使用 React 组件 (相对路径访问后端)
-import { QwenChat, QwenFileTree } from '@qwen-agent/react';
-
-function MyApp() {
-  return (
-    <div className="app">
-      <QwenChat
-        apiUrl="/api"  // ✅ 使用相对路径,由 Webpack/Nginx 代理
-        projectPath="/path/to/project"
-        model="qwen3-coder-plus"
-      />
-      <QwenFileTree apiUrl="/api" projectPath="/path/to/project" />
-    </div>
-  );
-}
-```
-
-**后端服务启动**:
-```bash
-# 安装
-npm install -g @qwen-agent/server
-
-# 启动服务
-qwen-server start --port 5008 --config ./qwen-server.config.js
-```
-
-**生产环境配置** (Nginx 反向代理):
-```nginx
-# nginx.conf
-location /api/ {
-  proxy_pass http://localhost:5008/;
-  proxy_http_version 1.1;
-  proxy_set_header Upgrade $http_upgrade;
-  proxy_set_header Connection "upgrade";
-  proxy_set_header Host $host;
-  proxy_set_header X-Real-IP $remote_addr;
-}
-```
-
-**实际案例参考**:
-- [Qwen-CLI-UI](https://github.com/cruzyjapan/Qwen-CLI-UI) - React + Vite + Express
-- [Gemini-CLI-UI](https://github.com/cruzyjapan/Gemini-CLI-UI) - 类似架构
-- [Claude Code UI](https://github.com/siteboon/claudecodeui) - 通用 CLI UI 框架
-
-#### 2.3 UI Components 内部架构设计
-
-为了同时支持"直连本项目后端"和"包装+自有后端"两种集成模式,UI Components 采用**三层可插拔架构**:
-
-##### 架构分层
-
-```
-┌─────────────────────────────────────────────┐
-│         视图层 (View Layer)                  │
-│  - React/Vue 组件                            │
-│  - UI 渲染逻辑                               │
-│  - 用户交互处理                              │
-└─────────────────┬───────────────────────────┘
-                  │ Props/Events
-┌─────────────────▼───────────────────────────┐
-│         数据层 (Data Layer)                  │
-│  - 状态管理 (State)                          │
-│  - 业务逻辑 (Logic)                          │
-│  - 数据转换 (Transform)                      │
-└─────────────────┬───────────────────────────┘
-                  │ 依赖注入
-┌─────────────────▼───────────────────────────┐
-│         API 层 (API Layer) ✨可插拔         │
-│  - HTTP Client                               │
-│  - WebSocket Client                          │
-│  - 请求/响应拦截器                           │
-└─────────────────────────────────────────────┘
-```
-
-##### 核心设计原则
-
-**1. 视图层与数据层紧密耦合**
-
-视图层和数据层作为一个整体提供,确保组件的即插即用:
-
-```typescript
-// @qwen-agent/react
-export function QwenChat({ apiUrl, model, projectPath }) {
-  // ✅ 视图层 + 数据层捆绑
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  // 视图层渲染
-  return (
-    <div className="qwen-chat">
-      <MessageList messages={messages} />
-      <InputBox onSubmit={handleSubmit} loading={loading} />
-    </div>
-  );
-}
-```
-
-**2. API 层可选可替换**
-
-API 层通过依赖注入的方式设计成可选的:
-
-**模式 A: 使用内置 API 层 (默认,直连本项目后端)**
-```tsx
-import { QwenChat } from '@qwen-agent/react';
-
-// ✅ 不传 apiClient,使用内置的 API 层
-<QwenChat
-  apiUrl="/api"  // 直连本项目后端
-  model="qwen3-coder-plus"
-/>
-```
-
-**模式 B: 自定义 API 层 (包装+自有后端)**
-```tsx
-import { QwenChat } from '@qwen-agent/react';
-import { myCustomApiClient } from './api/custom-client';
-
-// ✅ 传入自定义 apiClient,替换内置 API 层
-<QwenChat
-  apiClient={myCustomApiClient}  // 使用自定义 API 客户端
-  model="qwen3-coder-plus"
-/>
-```
-
-##### 可插拔 API 层设计
-
-**API Client 接口定义**
-
-```typescript
-// @qwen-agent/core/src/types/api-client.ts
-
-/**
- * API Client 接口
- * 用户可以实现此接口来自定义 API 层
- */
-export interface IQwenApiClient {
-  /**
-   * 执行 Agent 任务 (同步)
-   */
-  execute(request: ExecuteRequest): Promise<ExecuteResponse>;
-
-  /**
-   * 执行 Agent 任务 (流式)
-   */
-  executeStream(
-    request: ExecuteRequest,
-    callbacks: StreamCallbacks
-  ): Promise<void>;
-
-  /**
-   * 取消任务
-   */
-  cancelTask(taskId: string): Promise<void>;
-
-  /**
-   * 查询任务状态
-   */
-  getTaskStatus(taskId: string): Promise<TaskStatus>;
-
-  /**
-   * WebSocket 连接
-   */
-  connectWebSocket(
-    onMessage: (message: WebSocketMessage) => void,
-    onError?: (error: Error) => void
-  ): Promise<WebSocketConnection>;
-}
-
-export interface ExecuteRequest {
-  task: string;
-  context?: Record<string, any>;
-  tools?: string[];
-  timeout?: number;
-  model?: string;
-}
-
-export interface ExecuteResponse {
-  taskId: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  output?: string;
-  metadata?: Record<string, any>;
-}
-
-export interface StreamCallbacks {
-  onChunk?: (chunk: string) => void;
-  onToolCall?: (tool: string, args: any) => void;
-  onComplete?: (result: ExecuteResponse) => void;
-  onError?: (error: Error) => void;
-}
-```
-
-**内置 API Client 实现**
-
-```typescript
-// @qwen-agent/core/src/api/default-client.ts
-
-/**
- * 默认 API Client 实现
- * 直接调用 Qwen-Code Agent Server
- */
-export class DefaultQwenApiClient implements IQwenApiClient {
-  constructor(private config: {
-    baseUrl: string;
-    headers?: Record<string, string>;
-  }) {}
-
-  async execute(request: ExecuteRequest): Promise<ExecuteResponse> {
-    const response = await fetch(`${this.config.baseUrl}/agent/execute`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this.config.headers
-      },
-      body: JSON.stringify(request)
-    });
-
-    if (!response.ok) {
-      throw new Error(`API 调用失败: ${response.statusText}`);
-    }
-
-    return await response.json();
-  }
-
-  async executeStream(
-    request: ExecuteRequest,
-    callbacks: StreamCallbacks
-  ): Promise<void> {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${this.config.baseUrl}/ws`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'execute',
-        ...request
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-
-      switch (message.type) {
-        case 'output_chunk':
-          callbacks.onChunk?.(message.content);
-          break;
-        case 'tool_call':
-          callbacks.onToolCall?.(message.tool, message.arguments);
-          break;
-        case 'result':
-          callbacks.onComplete?.(message);
-          ws.close();
-          break;
-        case 'error':
-          callbacks.onError?.(new Error(message.error));
-          ws.close();
-          break;
-      }
-    };
-
-    ws.onerror = (error) => {
-      callbacks.onError?.(new Error('WebSocket 错误'));
-    };
-  }
-
-  // ... 其他方法实现
-}
-```
-
-**自定义 API Client 示例**
-
-用户可以实现自己的 API Client 来调用自有后端:
-
-```typescript
-// 用户项目: src/api/my-backend-client.ts
-
-import { IQwenApiClient, ExecuteRequest, ExecuteResponse, StreamCallbacks } from '@qwen-agent/core';
-
-/**
- * 自定义 API Client - 调用自有后端
- */
-export class MyBackendApiClient implements IQwenApiClient {
-  constructor(private config: {
-    baseUrl: string;
-    authToken: string;
-  }) {}
-
-  async execute(request: ExecuteRequest): Promise<ExecuteResponse> {
-    // ✅ 调用自有后端 API
-    const response = await fetch(`${this.config.baseUrl}/api/qwen/execute`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.authToken}`,  // 自己的认证
-        'X-User-ID': getUserId()  // 自定义 Header
-      },
-      body: JSON.stringify({
-        ...request,
-        // 可以添加额外的参数
-        customParam: 'my-value'
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`调用失败: ${response.statusText}`);
-    }
-
-    // 自有后端的响应格式可能不同,需要转换
-    const data = await response.json();
-    return {
-      taskId: data.id,
-      status: data.state,
-      output: data.result,
-      metadata: data.extra
-    };
-  }
-
-  async executeStream(
-    request: ExecuteRequest,
-    callbacks: StreamCallbacks
-  ): Promise<void> {
-    // ✅ 连接到自有后端的 WebSocket
-    const ws = new WebSocket(
-      `ws://${this.config.baseUrl}/api/qwen/stream?token=${this.config.authToken}`
-    );
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        action: 'execute',
-        payload: request,
-        userId: getUserId()
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-
-      // 自有后端的消息格式可能不同,需要转换
-      switch (message.action) {
-        case 'chunk':
-          callbacks.onChunk?.(message.data);
-          break;
-        case 'tool':
-          callbacks.onToolCall?.(message.toolName, message.toolArgs);
-          break;
-        case 'done':
-          callbacks.onComplete?.({
-            taskId: message.taskId,
-            status: 'completed',
-            output: message.output
-          });
-          ws.close();
-          break;
-        case 'error':
-          callbacks.onError?.(new Error(message.message));
-          ws.close();
-          break;
-      }
-    };
-  }
-
-  // ... 其他方法实现
-}
-```
-
-##### 组件使用示例
-
-**场景 1: 直连本项目后端 (使用内置 API 层)**
-
-```tsx
-import { QwenChat, QwenFileTree } from '@qwen-agent/react';
-
-function App() {
-  return (
-    <div>
-      {/* ✅ 不传 apiClient,自动使用内置 DefaultQwenApiClient */}
-      <QwenChat
-        apiUrl="/api"
-        model="qwen3-coder-plus"
-        projectPath="/path/to/project"
-      />
-
-      <QwenFileTree
-        apiUrl="/api"
-        projectPath="/path/to/project"
-      />
-    </div>
-  );
-}
-```
-
-**场景 2: 包装+自有后端 (替换 API 层)**
-
-```tsx
-import { QwenChat, QwenFileTree } from '@qwen-agent/react';
-import { MyBackendApiClient } from './api/my-backend-client';
-
-// 创建自定义 API Client
-const myApiClient = new MyBackendApiClient({
-  baseUrl: 'https://my-backend.com',
-  authToken: getUserToken()
-});
-
-function App() {
-  return (
-    <div>
-      {/* ✅ 传入自定义 apiClient,替换内置 API 层 */}
-      <QwenChat
-        apiClient={myApiClient}
-        model="qwen3-coder-plus"
-        projectPath="/path/to/project"
-        // 注意: apiUrl 不再需要,因为已经在 apiClient 中配置
-      />
-
-      <QwenFileTree
-        apiClient={myApiClient}
-        projectPath="/path/to/project"
-      />
-    </div>
-  );
-}
-```
-
-**场景 3: 混合使用 (部分组件用内置,部分用自定义)**
-
-```tsx
-import { QwenChat, QwenFileTree } from '@qwen-agent/react';
-import { MyBackendApiClient } from './api/my-backend-client';
-
-const myApiClient = new MyBackendApiClient({
-  baseUrl: 'https://my-backend.com',
-  authToken: getUserToken()
-});
-
-function App() {
-  return (
-    <div>
-      {/* QwenChat 使用自定义 API 层 (通过自有后端) */}
-      <QwenChat
-        apiClient={myApiClient}
-        model="qwen3-coder-plus"
-      />
-
-      {/* QwenFileTree 使用内置 API 层 (直连本项目后端) */}
-      <QwenFileTree
-        apiUrl="/api"
-        projectPath="/path/to/project"
-      />
-    </div>
-  );
-}
-```
-
-##### 实现要点
-
-**1. 组件内部判断逻辑**
-
-```tsx
-// @qwen-agent/react/src/components/QwenChat.tsx
-
-import { DefaultQwenApiClient } from '@qwen-agent/core';
-
-export function QwenChat({
-  apiUrl,
-  apiClient,
-  model,
-  projectPath,
-  ...otherProps
-}: QwenChatProps) {
-  // ✅ 优先使用传入的 apiClient,否则创建默认的
-  const client = useMemo(() => {
-    if (apiClient) {
-      return apiClient;  // 使用自定义 API 层
-    }
-
-    if (!apiUrl) {
-      throw new Error('必须提供 apiUrl 或 apiClient 之一');
-    }
-
-    // 创建内置 API 层
-    return new DefaultQwenApiClient({
-      baseUrl: apiUrl,
-      headers: otherProps.headers
-    });
-  }, [apiClient, apiUrl, otherProps.headers]);
-
-  // 使用 client 进行 API 调用
-  const handleSubmit = async (message: string) => {
-    setLoading(true);
-    try {
-      const response = await client.execute({
-        task: message,
-        context: { workspace: projectPath },
-        model
-      });
-      setMessages([...messages, response]);
-    } catch (error) {
-      console.error('执行失败:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ... 视图渲染
-}
-```
-
-**2. TypeScript 类型定义**
-
-```typescript
-// @qwen-agent/react/src/types/props.ts
-
-import { IQwenApiClient } from '@qwen-agent/core';
-
-export interface QwenChatProps {
-  /**
-   * API 基础 URL (使用内置 API 层时必填)
-   */
-  apiUrl?: string;
-
-  /**
-   * 自定义 API Client (可选,用于替换内置 API 层)
-   */
-  apiClient?: IQwenApiClient;
-
-  /**
-   * 模型名称
-   */
-  model?: string;
-
-  /**
-   * 项目路径
-   */
-  projectPath?: string;
-
-  /**
-   * 自定义 HTTP Headers (使用内置 API 层时有效)
-   */
-  headers?: Record<string, string>;
-
-  /**
-   * 其他配置...
-   */
-}
-```
-
-##### 优势总结
-
-通过这种三层可插拔架构设计:
-
-✅ **开箱即用**: 不传 `apiClient`,使用内置 API 层,直连本项目后端
-✅ **灵活可扩展**: 传入自定义 `apiClient`,调用自有后端
-✅ **视图数据一体**: 视图层+数据层捆绑,确保组件的完整性
-✅ **API 层解耦**: API 层通过接口抽象,可以任意替换
-✅ **渐进式采用**: 可以从完全使用内置 API 层开始,需要时再替换
-✅ **类型安全**: 通过 TypeScript 接口保证 API Client 的实现正确性
-
-这样的设计既满足了"快速上手"的需求(默认直连),又满足了"灵活定制"的需求(自定义 API 层),完美支持所有第三方集成路径!
-
-### 3. Qwen-Code Agent Client SDK
+### 1. Qwen-Code Agent Client SDK
 - **多语言支持**:
   - `qwen-agent-client` (Python)
   - `qwen-agent-client` (Java)
@@ -981,7 +263,7 @@ export interface QwenChatProps {
 
 - **适用场景**:
   - 第三方后端服务集成
-  - 需要完全自定义前端的场景
+- 希望自定义交互层体验的场景
   - 服务端到服务端调用
 
 - **核心功能**:
@@ -992,8 +274,8 @@ export interface QwenChatProps {
 
 #### 访问模式
 
-- **RPC 模式 (默认)**: 通过 HTTP/WebSocket 与 Qwen-Code Agent Server 通信,适合集中式部署、需要统一认证与共享存储的 SaaS 场景。
-- **IPC 模式 (新增)**: SDK 启动本地 `qwen` 子进程,以 JSON Lines 协议进行进程间通信,无需部署 Agent Server,适合 IDE 插件、企业内网脚本、桌面客户端等同机集成。
+- **IPC 模式 (默认)**: SDK 启动本地 `qwen` 子进程,以 JSON Lines 协议进行进程间通信,适合 IDE 插件、企业内网脚本、桌面客户端等同机集成。
+- **嵌入式 RPC 模式**: 上层系统可暴露自定义 RPC/HTTP 接口,由宿主进程转发到 SDK,用于集中式部署或多租户管控。
 
 > 📘 IPC 模式的协议与最新 CLI IPC 草案详见《qwen-code-cli-output-format-stream-json-rfc_cn.md》。
 
@@ -1005,61 +287,7 @@ client = QwenAgentClient(api_key="...", base_url="...")
 result = client.execute(task="...", context={...})
 ```
 
-### 4. API 网关 / Nginx
-- **跨域处理 (CORS)**:为前端集成提供跨域支持,配置 Access-Control-Allow-Origin 等头。
-- **认证鉴权**:统一的 API Key 或 JWT Token 验证,权限控制。
-- **负载均衡**:将请求分发到多个协调器实例,实现水平扩展。
-- **限流熔断**:保护后端服务不被过载,实现请求限流和熔断机制。
-
-**Nginx 配置示例**:
-```nginx
-location /api/ {
-    proxy_pass http://qwen-agent-orchestrator:8080/;
-    add_header Access-Control-Allow-Origin *;
-    add_header Access-Control-Allow-Methods "GET, POST, DELETE, OPTIONS";
-}
-```
-
-### 5. Qwen-Code Agent Server
-
-核心服务组件,负责**协调**会话管理和 Worker 分配,同时作为前端和 CLI 之间的服务器。
-
-**核心功能**:
-
-- **路由分发**:
-  - 根据会话 ID 路由到对应的 Worker
-  - 新会话自动分配空闲 Worker
-  - 支持会话亲和性 (Session Affinity)
-
-- **会话管理**:
-  - 会话创建:接收新任务请求,创建唯一会话 ID
-  - 状态跟踪:实时追踪会话状态 (运行中/暂停/完成/失败)
-  - 会话结束:清理会话数据,释放 Worker 到空闲池
-
-- **上下文管理**:
-  - 聚合历史对话记录
-  - 管理权限策略和工具白名单
-  - 注入任务执行所需的上下文信息
-
-- **Worker 池管理**:
-  - 维护 Worker 空闲/占用状态
-  - 健康检查:定期检测 Worker 可用性
-  - 动态扩缩容:根据负载自动调整 Worker 数量
-
-- **共享存储协调**:
-  - 管理会话文件、上传附件在 MinIO 的生命周期
-  - 提供签名 URL 供前端/第三方上传下载
-  - 监听 Worker 输出并同步关键产物到对象存储
-
-**技术实现** (对应 `@qwen-agent/server`):
-- **WebSocket 服务器**: 实时双向通信
-- **RESTful API**: 项目管理、Session 管理、文件操作
-- **CLI 进程管理**: 通过 `child_process.spawn()` 启动和管理 qwen-code CLI
-- **输出捕获**: 捕获 CLI 的 STDOUT/STDERR 并流式传输到前端
-- **认证系统**: JWT token 认证
-- **对象存储适配**: 内置 MinIO(S3) 客户端,实现桶/路径管理与访问签名
-
-### 6. Qwen-Code Agent SDK (内部)
+### 2. Qwen-Code Agent SDK (内部)
 
 > **⚠️ 可行性注意**: 此组件需要大量新增代码
 > - IPC 封装: 需约 500 行核心代码 (StdinReader, StdoutWriter, 消息路由)
@@ -1097,7 +325,7 @@ location /api/ {
     - 新增 Hooks 系统和事件机制
     - 在工具执行流程中插入 Hook 点
 
-### 7. Qwen-Code Workers 进程池
+### 3. Qwen-Code Workers 进程池
 热启动的 CLI 进程池,每个 Worker 独立运行。
 
 **Worker 状态机**:
@@ -1133,7 +361,7 @@ location /api/ {
 - `idle_timeout`:空闲 Worker 超时回收时间 (默认 30 分钟)
 - `max_concurrent_sessions`:单 Worker 生命周期内最大服务会话数
 
-### 8. 容器沙箱
+### 4. 容器沙箱
 每个 Worker 运行在独立的容器沙箱中,提供安全隔离。
 
 - **qwen-code CLI**:
@@ -1152,17 +380,17 @@ location /api/ {
   - `seccomp`:系统调用白名单,阻止危险操作
   - 网络隔离:可选的网络命名空间隔离
 
-### 9. 外围服务
+### 5. 外围服务
 - **MCP 服务**:Model Context Protocol 外部工具集成。
 - **监控告警**:Prometheus 采集指标,Grafana 可视化,实时告警。
 - **日志聚合**:ELK 或 Loki 收集所有组件日志,便于问题排查。
 - **链路追踪**:Jaeger/Zipkin 追踪请求全链路,定位性能瓶颈。
 
-### 10. MinIO 共享存储
+### 6. MinIO 共享存储
 - **统一文件桶**:提供跨机器的对象存储,用于缓存会话文件、上传附件以及第三方任务的输入输出。
-- **多端挂载**:Agent Server 和 Worker 通过 S3 兼容协议读写,第三方系统可通过 SDK 或挂载点访问同一桶。
-- **权限隔离**:支持基于 bucket/prefix 的访问策略,配合 API 网关和 IAM 管理进行细粒度授权。
-- **可靠性设计**:建议部署为分布式 MinIO 集群,启用版本控制与生命周期策略,保障文件持久化与成本优化。
+- **多端挂载**:SDK Runtime 与 Worker 通过 S3 兼容协议读写,第三方系统可通过 SDK 或挂载点访问同一桶。
+- **权限隔离**:支持基于 bucket/prefix 的访问策略,配合 IAM 系统进行细粒度授权。
+- **可靠性设计**:支持分布式 MinIO 集群,可启用版本控制与生命周期策略以提升持久化质量。
 
 ## Worker 复用机制详解
 
@@ -1215,146 +443,58 @@ worker_pool:
   health_check_interval: 60
 ```
 
-## 第三方集成路径
+## 集成模式
 
-### 路径 1: 通过 UI Components 集成 (前端+后端集成)
+### 模式一: 宿主进程内嵌 SDK (推荐)
 
-> **✅ 推荐方式**: 采用 Backend Server 架构,已验证可行
+- **适用场景**: IDE 插件、企业内部工具、CLI 扩展等需要最小化依赖的场合。
+- **关键特性**:
+  - SDK 直接在宿主进程内启动与管理 Worker 池
+  - 通过 IPC JSONL 协议与 qwen-code CLI 通信
+  - 可同步或流式获取会话输出
 
-**适用场景**:
-- 第三方已有前端应用 (React/Vue)
-- 希望快速集成 Agent 能力
-- 需要 UI 组件开箱即用
+**快速上手示例**:
+```python
+from qwen_agent_sdk import QwenClient
 
-**集成步骤**:
-
-1. **安装 Frontend 组件**:
-   ```bash
-   npm install @qwen-agent/react
-   ```
-
-2. **部署 Backend Server**:
-   ```bash
-   npm install @qwen-agent/server
-   ```
-
-   创建 `server.js`:
-   ```typescript
-   import { QwenServer } from '@qwen-agent/server';
-
-   const server = new QwenServer({
-     port: 5008,
-     qwenBinPath: process.env.QWEN_PATH || 'qwen',
-     defaultModel: 'qwen3-coder-plus',
-     auth: {
-       enabled: true,
-       jwtSecret: process.env.JWT_SECRET
-     }
-   });
-
-   server.start();
-   ```
-
-3. **在前端应用中使用组件**:
-   ```jsx
-   import { QwenChat, QwenFileTree } from '@qwen-agent/react';
-
-   function MyApp() {
-     return (
-       <div className="app">
-         <QwenChat
-           apiUrl="http://localhost:5008"
-           projectPath="/path/to/project"
-           model="qwen3-coder-plus"
-         />
-         <QwenFileTree projectPath="/path/to/project" />
-       </div>
-     );
-   }
-   ```
-
-**架构说明**:
-```
-第三方 React/Vue 应用
-  ↓ WebSocket/HTTP
-Backend Server (@qwen-agent/server)
-  ↓ spawn()
-qwen-code CLI (子进程)
+with QwenClient(binary_path="qwen", model="qwen3-coder-plus") as client:
+    result = client.chat(
+        task="扫描并修复 main.py 中的潜在 bug",
+        workspace="/repos/demo"
+    )
+    print(result.summary)
 ```
 
-**注意事项**:
-- Backend Server 负责 CLI 进程管理和输出捕获
-- Frontend 通过 WebSocket 接收实时输出
-- 不需要配置 Nginx CORS (Backend Server 和 Frontend 可以部署在同域)
-- 认证通过 Backend Server 的 JWT 系统处理
+### 模式二: 服务端封装 SDK
 
-### 路径 2: 通过 Client SDK 集成 (后端集成)
+- **适用场景**: 需要集中调度或为多语言后端提供统一接口的企业服务。
+- **关键特性**:
+  - 宿主服务将 SDK 作为内部运行时,对外暴露自定义 RPC/HTTP
+  - 可结合企业现有鉴权、审计与配额体系
+  - 便于集中化运营、统计与运维
 
-**适用场景**:
-- 第三方需要完全自定义前端
-- 后端服务调用 Agent 能力
-- 需要更细粒度的控制
+**服务封装伪代码**:
+```typescript
+import Fastify from 'fastify';
+import { createSdkRuntime } from '@qwen-agent/sdk';
 
-**集成步骤**:
-1. 安装 Client SDK: `pip install qwen-agent-client`
-2. 初始化客户端:
-   ```python
-   client = QwenAgentClient(
-       api_key=os.getenv("QWEN_API_KEY"),
-       base_url="https://qwen-agent.example.com"
-   )
-   ```
-3. 调用 Agent 服务:
-   ```python
-   result = client.execute(
-       task="分析代码质量",
-       context={"workspace": "/path/to/project"}
-   )
-   ```
-4. 自定义前端通过后端 API 获取结果
+const app = Fastify();
+const runtime = await createSdkRuntime({
+  binaryPath: process.env.QWEN_BIN || 'qwen',
+  maxWorkers: 8
+});
 
-**注意事项**:
-- 前端需要自行实现所有 UI 交互
-- 后端需要处理 Agent 的流式输出
-- 建议实现 WebSocket 用于实时推送
+app.post('/v1/agent/run', async (req, reply) => {
+  const { task, workspace } = req.body;
+  const session = await runtime.createSession();
+  const result = await session.run({ task, workspace });
+  return reply.send(result);
+});
 
-## 部署架构建议
-
-### 单机部署
-```
-Nginx (8080)
-  ↓
-Qwen-Code Agent Server (单实例)
-  ↓
-Workers Pool (5-10 个 Workers)
+await app.listen({ port: 6001 });
 ```
 
-### 高可用部署
-```
-Nginx Cluster (LB)
-  ↓
-Qwen-Code Agent Server Cluster (3-5 实例)
-  ↓
-Distributed Worker Pool (50-100 Workers)
-  ↓
-Shared Storage (NFS/S3)
-```
-
-### K8s 部署
-```yaml
-# Qwen-Code Agent Server Deployment
-replicas: 3
-resources:
-  requests:
-    cpu: 2
-    memory: 4Gi
-
-# Worker DaemonSet
-resources:
-  requests:
-    cpu: 4
-    memory: 8Gi
-```
+两种模式均通过同一套 SDK API 管理会话、工具权限与上下文,差异主要在于部署形态与对外暴露方式。
 
 ## 模块设计概述
 
@@ -1383,53 +523,6 @@ echo '{"model":"qwen-coder","messages":[{"role":"user","content":"你好"}],"ses
 
 **风险**: 中等 - 需要对 qwen-code 核心流程进行改造
 
-### Qwen-Code Agent Server
-
-**目标**: 实现 `@qwen-agent/server` 独立可运行服务,用于 UI 组件
-
-**依赖**: qwen-code 支持 `--prompt` 参数和 STDOUT 输出
-
-**任务**:
-1. 实现 WebSocket 服务器 (基于 ws)
-2. 实现 CLI 进程管理 (spawn, 输出捕获, 进程池)
-3. 实现 RESTful API (项目管理, Session 管理, 文件操作)
-4. 实现认证系统 (JWT)
-5. 实现 CLI 命令 (qwen-server start/stop)
-6. 编写 `@qwen-agent/server` npm 包
-
-**可交付成果**:
-```bash
-# 安装
-npm install -g @qwen-agent/server
-
-# 启动服务
-qwen-server start --port 5008 --config ./qwen-server.config.js
-```
-
-**风险**: 低 - 参考 Qwen-CLI-UI 和 Gemini-CLI-UI 实现
-
-### React 组件库
-
-**目标**: 实现 `@qwen-agent/react` 包,为 React 应用提供 UI 能力
-
-**依赖**: Qwen-Code Agent Server
-
-**任务**:
-1. 实现 `<QwenChat>` 组件
-2. 实现 `<QwenFileTree>` 组件
-3. 实现 `<QwenEditor>` 组件 (Monaco/CodeMirror)
-4. 实现 `<QwenTerminal>` 组件 (xterm.js)
-5. 实现 `<QwenProvider>` 上下文
-6. 编写 `@qwen-agent/react` npm 包
-
-**可交付成果**:
-```jsx
-import { QwenChat } from '@qwen-agent/react';
-<QwenChat apiUrl="http://localhost:5008" model="qwen3-coder-plus" />
-```
-
-**风险**: 低 - Web 组件开发,技术成熟
-
 ### Python SDK 基础
 
 **目标**: 实现 `qwen-agent-client` Python 包
@@ -1451,25 +544,6 @@ async with QwenClient() as client:
 ```
 
 **风险**: 低 - 依赖 IPC 协议完成
-
-### 官方 Portal
-
-**目标**: 实现官方 Web UI (qwen-code-ui)
-
-**依赖**: Qwen-Code Agent Server, Vue 组件库
-
-**技术栈**: Vue.js + Vite + Tailwind CSS
-
-**任务**:
-1. 使用 `@qwen-agent/vue` 组件构建完整 UI
-2. 实现项目和 Session 管理界面
-3. 实现设置面板 (模型选择, 权限模式)
-4. 实现集成终端 (xterm.js + node-pty)
-5. 编写部署文档和 Docker 镜像
-
-**可交付成果**: 完整的 Web UI 应用 (Vue.js),可通过浏览器访问
-
-**风险**: 低 - 基于已完成的 Vue 组件库
 
 ### 控制协议
 
@@ -1538,14 +612,10 @@ pool.release(worker)
 | 设计部分 | 可行性 | 风险 |
 |---------|--------|------|
 | **IPC 协议** | ⚠️ 可行 | 中等 |
-| **Qwen-Code Agent Server** | ✅ 完全可行 | 低 |
-| **Vue 组件库** | ✅ 完全可行 | 低 |
+| **Qwen-Code Agent SDK (内部)** | ✅ 完全可行 | 低 |
 | **Python SDK** | ✅ 完全可行 | 低 |
-| **Portal (Vue.js)** | ✅ 完全可行 | 低 |
 | **Worker 进程池** | ✅ 完全可行 | 低 |
 | **控制协议** | ⚠️ 部分可行 | 中等 |
-| **API 网关/协调器** | 📝 保留设计 | TBD |
-| **React 组件库** | ✅ 完全可行 | 低 |
 | **其他语言 SDK** | ✅ 完全可行 | 低 |
 | **SDK MCP 服务器** | 📝 保留设计 | 高 |
 
@@ -1558,56 +628,45 @@ IPC 协议
   │     └─→ Node.js/Go/Java SDK
   └─→ 控制协议
 
-Backend Server SDK
-  ├─→ Vue 组件库
-  │     └─→ Portal (Vue.js 实现)
-  └─→ React 组件库 (第三方集成)
-  └─→ (独立于 IPC 协议,使用现有 --prompt 模式)
+Agent SDK Runtime
+  ├─→ Worker 进程池
+  └─→ 观察性组件 (监控/日志/追踪)
 ```
 
 ## 实现要点
 
-1. **整合 Qwen-Code Agent Server 与 Vue 组件**:
-   - 不依赖 IPC 协议即可提供 UI 能力
-   - 参考 Qwen-CLI-UI 与 Gemini-CLI-UI 的服务模式
-   - Vue 组件库直接支撑 Portal 构建
-
-2. **官方 Portal 构建策略**:
-   - 复用 `@qwen-agent/vue` 提供的组件体系
-   - 通过 Vue.js + Vite + Tailwind CSS 实现完整 UI
-   - 部署建议: 开发环境采用 Vite 代理,生产环境使用 Nginx 反向代理
-
-3. **巩固 IPC 协议能力**:
-   - 协议为 Python SDK 与高级功能提供基础
+1. **巩固 IPC 协议能力**:
+   - 协议为多语言 SDK 与控制协议提供统一基座
    - CLI 需要完整的握手、结构化输入与错误语义
    - 控制协议和 Worker 池直接复用该事件流
 
-4. **模块完成后执行集成验证**:
+2. **完善 Agent SDK Runtime**:
+   - 维护 Worker 复用/回收策略,确保资源占用可控
+   - 内置会话上下文聚合与权限裁决 Hook
+   - 打通监控/日志/追踪埋点,便于运维观测
+
+3. **模块完成后执行集成验证**:
    - 每个模块完成后进行端到端联调
    - 保证新增能力不会破坏既有行为
 
-5. **保留设计的处理策略**:
-   - API 网关在核心能力稳定后再评估
+4. **保留设计的处理策略**:
+   - 接入层形态可按宿主服务需求裁剪
    - SDK MCP 服务器因技术难度较高暂缓
-   - React 组件库作为第三方集成的可选方案
 
 ## 参考资料
 
 ### 成功案例
 
-- [Qwen-CLI-UI](https://github.com/cruzyjapan/Qwen-CLI-UI) - Backend Server 架构参考
-- [Gemini-CLI-UI](https://github.com/cruzyjapan/Gemini-CLI-UI) - CLI 集成模式参考
-- [Claude Code UI](https://github.com/siteboon/claudecodeui) - 通用 CLI UI 框架
+- `qwen-code-cli` JSONL IPC prototype
+- [Open Interpreter](https://github.com/KillianLucas/open-interpreter) - 多语言 CLI 编排实践
 
 ### 可行性评估文档
 
 - `qwen-code-agent-framework-feasibility-audit.md` - 完整可行性稽核报告
-- `qwen-code-ui-components-correction.md` - UI Components 架构修正说明
 
 ### 技术参考
 
-- **node-pty**: 终端模拟
-- **xterm.js**: Web 终端
-- **Monaco Editor / CodeMirror**: 代码编辑器
-- **WebSocket (ws)**: 实时通信
-- **Express**: Web 框架
+- **asciinema**: 终端录制与回放
+- **node-pty**: 子进程终端模拟
+- **ws**: WebSocket 实现
+- **prom-client** / **winston** / **jaeger-client**: 观察性工具链
