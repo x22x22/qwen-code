@@ -11,7 +11,7 @@
 
 **核心组件: Qwen-Code Agent SDK**
 
-文档聚焦于 **Qwen-Code Agent SDK** 的设计,它以内嵌运行时的形式为各语言客户端提供统一的会话调度、进程管理与控制协议能力。
+文档聚焦于 **Qwen-Code Agent SDK** 的设计,各语言第三方应用依赖此库后可以进行统一的会话调度、进程管理与控制协议能力。
 
 - **作用**:
   - 在宿主应用进程内封装会话路由与控制协议
@@ -37,27 +37,20 @@ flowchart LR
         NodeSDK["qwen-agent-client<br/>Node.js"]
     end
 
-    subgraph AgentRuntime["Qwen-Code Agent SDK Runtime"]
+    subgraph AgentSDK["Qwen-Code Agent SDK"]
         direction TB
         Router["会话调度<br/>路由 / 负载均衡"]
         ControlPlane["控制协议<br/>Hook / 权限判定"]
-        ProcessMgr["进程管理<br/>启动 / 监控 / 重启"]
-        IPC["IPC 适配层<br/>STDIN/STDOUT JSONL"]
         WorkerPool["Worker 池管理<br/>分配 / 回收 / 健康检查"]
+        ProcessMgr["子进程管理<br/>启动 / 监控 / 重启"]
+        IPC["IPC 适配层<br/>STDIN/STDOUT JSONL"]
     end
 
-    subgraph Workers["Qwen-Code Workers"]
+    subgraph Workers["qwen-code CLI Workers"]
         direction LR
-        Worker1["Worker #1<br/>绑定 CLI"]
-        Worker2["Worker #2<br/>绑定 CLI"]
+        Worker1["Worker #1<br/>qwen-code CLI"]
+        Worker2["Worker #2<br/>qwen-code CLI"]
         WorkerN["Worker #N"]
-    end
-
-    subgraph Sandboxes["容器沙箱"]
-        direction LR
-        Sandbox1["沙箱 #1<br/>CLI + 工具桥接"]
-        Sandbox2["沙箱 #2"]
-        SandboxN["沙箱 #N"]
     end
 
     subgraph Services["外围服务"]
@@ -70,34 +63,27 @@ flowchart LR
     Clients --> Router
     Router --> ControlPlane
     Router --> WorkerPool
-    ControlPlane --> IPC
-    IPC --> ProcessMgr
-    ProcessMgr --> WorkerPool
-    WorkerPool --> Worker1
-    WorkerPool --> Worker2
-    WorkerPool --> WorkerN
+    WorkerPool --> ProcessMgr
+    ProcessMgr --> IPC
+    IPC --> Worker1
+    IPC --> Worker2
+    IPC --> WorkerN
 
-    Worker1 --> Sandbox1
-    Worker2 --> Sandbox2
-    WorkerN --> SandboxN
-
-    Sandbox1 --> MCP
-    Sandbox2 --> MCP
-    SandboxN --> MCP
+    Worker1 --> MCP
+    Worker2 --> MCP
+    WorkerN --> MCP
 
     Router --> Monitor
     Router --> Logger
     Router --> Trace
 
     classDef clientStyle fill:#e67e22,stroke:#ba6c1e,color:#fff
-    classDef runtimeStyle fill:#f39c12,stroke:#ca7e08,color:#fff
+    classDef sdkStyle fill:#f39c12,stroke:#ca7e08,color:#fff
     classDef workerStyle fill:#16a085,stroke:#138d75,color:#fff
-    classDef sandboxStyle fill:#7f8c8d,stroke:#5d6d7e,color:#fff
     classDef serviceStyle fill:#95a5a6,stroke:#707b7c,color:#fff
     class Clients,PythonSDK,GoSDK,JavaSDK,NodeSDK clientStyle
-    class AgentRuntime,Router,ControlPlane,ProcessMgr,IPC,WorkerPool runtimeStyle
+    class AgentSDK,Router,ControlPlane,ProcessMgr,IPC,WorkerPool sdkStyle
     class Workers,Worker1,Worker2,WorkerN workerStyle
-    class Sandboxes,Sandbox1,Sandbox2,SandboxN sandboxStyle
     class Services,MCP,Monitor,Logger,Trace serviceStyle
 ```
 
@@ -108,9 +94,8 @@ flowchart LR
 ```
 qwen-code-agent-sdk =
     qwen-code-agent-client-sdk (Python/Go/Java/Node)
-    + qwen-code-agent-sdk (内部编排层)
-    + qwen-code-workers (进程池/实例)
-    + sandbox-runtime (容器沙箱)
+    + qwen-code-agent-sdk (子进程调度层)
+    + qwen-code-cli workers (子进程实例)
     + observability-stack (监控 / 日志 / 追踪)
 ```
 
@@ -120,11 +105,12 @@ qwen-code-agent-sdk =
 - **多语言支持**:
   - `qwen-agent-client` (Python)
   - `qwen-agent-client` (Java)
+  - `qwen-agent-client` (Typescript)
   - `qwen-agent-client` (Go)
 
 - **适用场景**:
   - 第三方后端服务集成
-- 希望自定义交互层体验的场景
+  - 希望自定义交互层体验的场景
   - 服务端到服务端调用
 
 - **核心功能**:
@@ -148,12 +134,12 @@ client = QwenAgentClient(api_key="...", base_url="...")
 result = client.execute(task="...", context={...})
 ```
 
-### 2. Qwen-Code Agent SDK (内部)
+### 2. Qwen-Code Agent SDK (子进程调度层)
 
 > - IPC 封装: (StdinReader, StdoutWriter, 消息路由)
-> - 控制协议:  (ControlProtocolService, Hook Registry)
+> - 控制协议: (ControlProtocolService, Hook Registry)
 
-Qwen-Code Agent SDK 与 Worker 进程之间的通信层。
+Qwen-Code Agent SDK 直接管理 qwen-code CLI 子进程,负责通信、生命周期与权限控制。
 
 - **IPC 封装**:
   - 基于 STDIN/STDOUT 的 JSON Lines 协议,输入遵循 `docs/ipc/qwen-chat-request-schema.json`(扩展自 OpenAI `/chat/completions`,包含 `session_id`、`prompt_id`、`tool_call_id` 等会话字段)。
@@ -173,7 +159,7 @@ Qwen-Code Agent SDK 与 Worker 进程之间的通信层。
   - 进程生命周期管理
   - 资源限制 (CPU/内存/超时)
 
-- **控制协议** :
+- **控制协议**:
   - 工具权限动态授予/撤销
   - Hook 回调 (pre-commit、post-execute 等)
   - 会话级配置传递
@@ -185,6 +171,8 @@ Qwen-Code Agent SDK 与 Worker 进程之间的通信层。
 
 ### 3. Qwen-Code Workers 进程池
 热启动的 CLI 进程池,每个 Worker 独立运行。
+
+**环境说明**: Worker 本质是 qwen-code CLI 子进程,其容器/沙箱与工具桥接逻辑均由 CLI 自主管理,SDK 只负责通过 STDIN/STDOUT 进行调度与控制。
 
 **Worker 状态机**:
 ```
@@ -296,24 +284,24 @@ with QwenClient(binary_path="qwen", model="qwen3-coder-plus") as client:
 
 - **适用场景**: 需要集中调度或为多语言后端提供统一接口的企业服务。
 - **关键特性**:
-  - 宿主服务将 SDK 作为内部运行时,对外暴露自定义 RPC/HTTP
+  - 宿主服务将 SDK 作为子进程管理层,封装自定义 RPC/HTTP
   - 可结合企业现有鉴权、审计与配额体系
   - 便于集中化运营、统计与运维
 
 **服务封装伪代码**:
 ```typescript
 import Fastify from 'fastify';
-import { createSdkRuntime } from '@qwen-agent/sdk';
+import { createAgentManager } from '@qwen-agent/sdk';
 
 const app = Fastify();
-const runtime = await createSdkRuntime({
+const manager = await createAgentManager({
   binaryPath: process.env.QWEN_BIN || 'qwen',
   maxWorkers: 8
 });
 
 app.post('/v1/agent/run', async (req, reply) => {
   const { task, workspace } = req.body;
-  const session = await runtime.createSession();
+  const session = await manager.createSession();
   const result = await session.run({ task, workspace });
   return reply.send(result);
 });
