@@ -526,10 +526,12 @@ CLI 会使用提供的 `resolved` 值读取文件；若未提供则回退到 `ha
 - 代码现状：`third-party/qwen-code` 目前只支持单向输出（CLI → STDOUT），TUI 中的确认/对话框逻辑直接在进程内处理，缺少像 Claude Code 那样的 `control_request` / `control_response` hook。
 - 设计需求：为了让 SDK 集成具备与 TUI 等价的能力（命令确认、敏感操作授权、子代理调度等），协议需复用“独立事件 + STDIN 回写”模式，实现真正的双向通信。
   - 当 CLI 需要外部输入时，输出 `{"type":"control_request","session_id":"session-123","request_id":"req-1","request":{"subtype":"confirm_shell_commands",...}}`。
+  - 支持 In-Process MCP Server 时，CLI 还需输出 `subtype: "mcp_message"`，实体内携带 JSON-RPC (`tools/list`、`tools/call`、`initialize` 等)；SDK 处理后在 `control_response` 中返回 `{"response":{"mcp_response":{...}}}`。
   - 第三方应用处理后，通过 STDIN 写回 `{"type":"control_response","request_id":"req-1","response":{"subtype":"success","result":{"behavior":"approve"}}}`。  
   - 该事件不写入会话历史，保持与 `command_hint`、`heartbeat` 相同的旁路通道。
 - 场景覆盖：
   - `/confirm_shell_commands`、`confirm_action`、`quit_confirmation` 等需要用户响应的命令。
+  - In-Process MCP Server 工具调用链路（`mcp_message` → `mcp_response`）。
   - 工具权限审批（类似 `can_use_tool`）、计划执行或子代理调度需要外部确认的步骤。
   - 未来扩展的弹窗、表单、身份验证流程。
 - 回退策略：在通道未启用时，CLI 应采用显式策略（例如自动拒绝危险操作、提示“在结构化模式下不可用”），并在 `result/command` 中返回明确错误，避免静默失败。
@@ -538,9 +540,38 @@ CLI 会使用提供的 `resolved` 值读取文件；若未提供则回退到 `ha
   2. 在 CLI 中抽象统一的控制消息分发层，使 TUI 与 CLI 复用同一逻辑。  
   3. 在 SDK 中实现监听与响应，暴露钩子给上层 UI。
 
+#### 事件机制分类
+
+为便于第三方实现统一的事件路由与处理，本 RFC 将结构化 STDIN/STDOUT 消息归纳为三类：
+
+1. **结果事件 (`result/*`)**  
+   - CLI → STDOUT 的单向通告，例如 `result/command`、`result/command_hint`、`result/heartbeat`、`result/cancel`、`x-qwen-session-event`。  
+   - 承载命令输出、提示建议、心跳反馈、取消结果及会话状态更新，不要求 SDK 回执。  
+   - 建议第三方根据 `type` 字段实现事件派发，确保不同 UI/服务都能统一处理。
+
+2. **请求事件 (`*request`)**  
+   - 第三方 → STDIN 的前向指令，例如 `command_hint_request`、`heartbeat_request`、`control/cancel`。  
+   - 用于触发 CLI 的即时响应：
+     - `command_hint_request` 获取 `/`、`@` 等提示建议；
+     - `heartbeat_request` 维持保活；
+     - `control/cancel` 终止当前响应。  
+   - CLI 会以对应的 `result/*` 事件回复（如 `result/command_hint`、`result/heartbeat`、`result/cancel`）。
+
+3. **控制通道事件 (`control_request`/`control_response`)**  
+   - CLI → STDOUT 输出 `control_request`，SDK/第三方需在 STDIN 写回匹配的 `control_response`；
+   - 用于需要回执的回调场景：工具授权 (`can_use_tool`)、Hook (`hook_callback`)、规划中的 MCP 调用 (`subtype: "mcp_message"`) 等；
+   - 每条 `control_request` 包含唯一 `request_id`，SDK 必须在合理超时内返回结果或错误，避免 CLI 阻塞。  
+   - `control_request` 不写入会话历史，而通过控制层旁路处理，保持与 TUI 行为一致。
+
+以上三类事件通过统一的 JSON Lines 协议传输，可视作同一事件机制的不同子类。集成方在实现时应：
+
+- 按 `type` 或 `subtype` 进行分发，避免将 `control_request` 与一般 `result/*` 混淆；
+- 确保请求事件在 STDIN 写入后正确等待相应的 `result/*` 反馈；
+- 对控制通道事件实现健壮的回执与超时处理，以防 CLI 阻塞或进入不一致状态。
+
 ### JSON Schema 与版本协商
 
-- 发布 `docs/ipc/qwen-chat-request-schema.json`（后续 PR 由 SDK 团队维护），在 OpenAI `/chat/completions` 基础上精简为“增量输入”模型，保留 `model`、`tools` 等字段，并新增 `session_id`、`prompt_id`、`origin`、`tool_call_id` 等会话字段。
+- 在 OpenAI `/chat/completions` 基础上精简为“增量输入”模型，保留 `model`、`tools` 等字段，并新增 `session_id`、`prompt_id`、`origin`、`tool_call_id` 等会话字段。
 - CLI 在首个 `chat.completion` 对象的 `metadata`（或 `system_fingerprint` 扩展段）中附带 `protocol_version`、`output_format`、`input_format`、`capabilities`（当支持 chunk 输出时应包含 `chat.completion.chunk` 能力位）。
 - SDK 若请求超出 CLI 能力（例如 `protocol_version=3`），CLI 将返回 `chat.completion` 对象，其中 `choices[0].finish_reason="error"` 并在 `usage` 或 `metadata.error` 中携带 `unsupported_protocol` 描述，同时以非零退出码终止。
 
