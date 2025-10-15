@@ -66,6 +66,8 @@ flowchart LR
     Router --> WorkerPool
     WorkerPool --> ProcessMgr
     ProcessMgr --> IPC
+    ControlPlane -->|control_response| IPC
+    IPC -->|control_request| ControlPlane
     IPC --> Worker1
     IPC --> Worker2
     IPC --> WorkerN
@@ -88,6 +90,12 @@ flowchart LR
     class Services,MCP,Monitor,Logger,Trace serviceStyle
 ```
 
+> **双向通信说明**:
+> - Agent SDK 与 qwen-code CLI 共用 STDIN/STDOUT 建立双向 JSONL 通道。
+> - CLI 将 `chat.completion`/`result/*` 及 `control_request` 等事件 (比如工具权限请求、MCP 调用) 逐行写入 stdout。
+> - SDK 读取事件后, 视需求通过 stdin 写回 `control_response` 或其它控制消息, 保持状态一致。
+> - 当事件为 `control_request{subtype:"mcp_message"}` 时, ControlPlane 会把 JSON-RPC 转发给 In-Process MCP Server 执行对应工具, 再把 `mcp_response` 封装进 `control_response` 回传 CLI, 形成闭环。
+
 ## 关键组件说明
 
 ### 1. Qwen-Code Agent Client SDK
@@ -104,16 +112,39 @@ flowchart LR
   - 服务端到服务端调用
 
 - **核心功能**:
-  - 同步/异步任务执行
-  - 流式输出
-  - 会话管理
-  - 错误处理与重试
+- 同步/异步任务执行
+- 流式输出
+- 会话管理
+- 错误处理与重试
+- In-Process MCP Server 工具桥接
 
 #### 通信模式
 
 - **IPC 模式**: SDK 启动本地 `qwen` 子进程,以 JSON Lines 协议进行进程间通信。
 
 > 📘 IPC 模式的协议与最新 CLI IPC 草案详见《qwen-code-cli-output-format-stream-json-rfc_cn.md》。
+
+#### In-Process MCP Server
+
+- **形态**: SDK 依赖 `mcp>=0.1` 在宿主进程内创建 MCP Server, 将通过 `@tool`/`defineTools` 定义的函数注册为工具, 无需额外子进程或网络服务。
+- **事件链路**: 当 CLI 输出 `control_request{subtype:"mcp_message"}` 到 stdout 时, SDK 把 JSON-RPC 内容转发给本地 MCP Server 执行 `tools/list`、`tools/call` 等操作, 并把结果封装为 `control_response` 回写 stdin。
+- **授权分工**: 工具执行前的授权仍由 CLI 触发 `control_request{subtype:"can_use_tool"}` 等事件并交由 SDK 回调处理, 与 MCP 调用链路解耦, 保持权限判定的独立性。
+- **优势**: 复用 CLI 权限判定链路, 让工具实现保持低延迟; Hook 体系当前仍待 CLI 侧落地, 届时可沿同一通路接入。整体方案与 Claude Agent SDK 的 In-Process 实践对齐, 便于多语言同步拓展。
+
+```mermaid
+sequenceDiagram
+    participant CLI as qwen-code CLI (stdout/stdin)
+    participant Control as Agent SDK ControlPlane
+    participant MCP as In-Process MCP Server
+    participant Tool as 用户自定义工具
+
+    CLI->>Control: control_request (subtype="mcp_message")
+    Control->>MCP: JSON-RPC (tools/list | tools/call)
+    MCP->>Tool: 调用异步处理函数
+    Tool-->>MCP: 处理结果
+    MCP-->>Control: jsonrpc result (mcp_response)
+    Control-->>CLI: control_response (stdout)
+```
 
 **集成方式**:
 
@@ -200,6 +231,15 @@ result = client.execute(task="...", context={...})
 - **权限同步**: 将 `onPermissionRequest` 结果转为 JSONL `control_response`, 保证与 Python 绑定行为一致。
 - **调试工具**: 提供 `enableVerboseLogging()` 开关, 输出 CLI 命令、payload、耗时指标。
 - **测试矩阵**: 使用 `vitest` + `tsx` 覆盖, 结合 `@qwen-code/cli` mock 校验流式输出与权限回调。
+
+#### 双向控制协议实现参考 (对齐 Claude Agent SDK TS)
+
+- **统一 STDIO 通道**: 复用 CLI `stream-json` 定义的结构, `ProcessTransport` 将 stdout 逐行解码 (`JSON.parse`) 并通过 `EventEmitter` 推送 `control_request`、`result/*`、`chat.completion*` 等事件；所有反向 `control_response` 均通过同一子进程 stdin 写回, 遵循 RFC 中的 JSON Lines 约定。
+- **请求/响应路由**: `createAgentManager()` 在会话级维护 `pendingControl` 映射, `request_id` 作为 key, 保障 `control_request` 并发时的正确配对；若超时则触发 `AbortController.abort()` 并向 CLI 返回 `subtype:"error"`。
+- **权限与 Hook 回调**: `onPermissionRequest`、`onHookEvent` 等回调被包装为 Promise, 统一生成 `control_response` payload (`{"response":{"behavior":"allow"}}` 等); 若上层未注册回调, SDK 直接返回 RFC 规定的默认策略, 避免 CLI 阻塞。
+- **MCP 工具桥接**: `defineTools()` 将 TypeScript 函数组装为 SDK 内嵌 MCP server, CLI 通过 `control_request{subtype:"mcp_message"}` 发起 `tools/list`/`tools/call`, SDK 使用 `jsonrpc` 透传至 in-process server 并回写 `mcp_response` 字段, 行为与 Python 版本一致。
+- **初始化握手**: 会话启动时, SDK 主动等待 CLI 首条 `chat.completion` 握手元数据 (`protocol_version`,`capabilities`), 同时根据 RFC 在首个 `control_request{subtype:"initialize"}` 中附带 Hook 配置与工具能力声明, 以便 CLI 构建完整的会话态。
+- **异常降级**: 当反向回调抛出异常或序列化失败时, SDK 会记录 verbose 日志并发送 `control_response{subtype:"error"}`, 提醒 CLI 走安全回退路径 (例如拒绝危险命令), 与 Anthropics TypeScript SDK 的容错策略保持一致。
 
 ### 其它语言绑定 (TODO)
 
