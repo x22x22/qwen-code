@@ -11,15 +11,16 @@
 
 **核心组件: Qwen-Code Agent SDK**
 
-文档聚焦于 **Qwen-Code Agent SDK** 的设计,各语言第三方应用依赖此库后可以进行统一的会话调度、进程管理与控制协议能力。
+文档聚焦于 **Qwen-Code Agent SDK** 的设计,基于统一的IPC协议为各语言提供对应的agent sdk，给第三方应用提供qwen code集成开发，提供对qwen code统一的会话调度、进程管理与控制协议能力。
 
 - **作用**:
   - 在宿主应用进程内封装会话路由与控制协议
   - 负责 Worker 池的生命周期、健康检查与调度
-  - 提供一致的 IPC/JSONL 抽象,屏蔽 CLI 细节
-- **形态**: 以 `@qwen-agent/sdk` (Node.js) 与多语言 bindings (Python / Go / Java / Node.js) 发布
+  - 提供一致的 集成API，符合qwen code定义的IPC/JSONL 抽象,屏蔽 CLI 细节
+- **形态**: SDK
 
 核心功能:
+
 - 会话调度与路由
 - CLI 子进程生命周期与资源治理
 - 控制协议 Hook / 权限判定
@@ -31,10 +32,10 @@
 flowchart LR
     subgraph Clients["第三方应用 / 服务"]
         direction LR
-        PythonSDK["qwen-agent-client<br/>Python"]
-        GoSDK["qwen-agent-client<br/>Go"]
-        JavaSDK["qwen-agent-client<br/>Java"]
-        NodeSDK["qwen-agent-client<br/>Node.js"]
+        TypeScriptSDK["qwen-agent-sdk<br/>TypeScript"]
+        PythonSDK["qwen-agent-sdk<br/>Python"]
+        GoSDK["qwen-agent-sdk<br/>Go (TODO)"]
+        JavaSDK["qwen-agent-sdk<br/>Java (TODO)"]
     end
 
     subgraph AgentSDK["Qwen-Code Agent SDK"]
@@ -54,9 +55,9 @@ flowchart LR
     end
 
     subgraph Services["外围服务"]
-        MCP["MCP 服务"]
+        LLM_MCP["大模型服务/MCP 服务"]
         Monitor["监控告警"]
-        Logger["日志聚合"]
+        Logger["日志中心"]
         Trace["链路追踪"]
     end
 
@@ -69,9 +70,9 @@ flowchart LR
     IPC --> Worker2
     IPC --> WorkerN
 
-    Worker1 --> MCP
-    Worker2 --> MCP
-    WorkerN --> MCP
+    Worker1 --> LLM_MCP
+    Worker2 --> LLM_MCP
+    WorkerN --> LLM_MCP
 
     Router --> Monitor
     Router --> Logger
@@ -81,32 +82,21 @@ flowchart LR
     classDef sdkStyle fill:#f39c12,stroke:#ca7e08,color:#fff
     classDef workerStyle fill:#16a085,stroke:#138d75,color:#fff
     classDef serviceStyle fill:#95a5a6,stroke:#707b7c,color:#fff
-    class Clients,PythonSDK,GoSDK,JavaSDK,NodeSDK clientStyle
+    class Clients,TypeScriptSDK,PythonSDK,GoSDK,JavaSDK clientStyle
     class AgentSDK,Router,ControlPlane,ProcessMgr,IPC,WorkerPool sdkStyle
     class Workers,Worker1,Worker2,WorkerN workerStyle
     class Services,MCP,Monitor,Logger,Trace serviceStyle
 ```
 
-## 系统组成
-
-### 完整组件构成
-
-```
-qwen-code-agent-sdk =
-    qwen-code-agent-client-sdk (Python/Go/Java/Node)
-    + qwen-code-agent-sdk (子进程调度层)
-    + qwen-code-cli workers (子进程实例)
-    + observability-stack (监控 / 日志 / 追踪)
-```
-
 ## 关键组件说明
 
 ### 1. Qwen-Code Agent Client SDK
+
 - **多语言支持**:
-  - `qwen-agent-client` (Python)
-  - `qwen-agent-client` (Java)
-  - `qwen-agent-client` (Typescript)
-  - `qwen-agent-client` (Go)
+  - `qwen-agent-sdk` (Python): 首发绑定, 复用 TypeScript 控制协议并提供 Pythonic API
+  - `qwen-agent-sdk` (TypeScript): 核心实现, 提供子进程编排与控制协议能力
+  - `qwen-agent-sdk` (Go): TODO
+  - `qwen-agent-sdk` (Java): TODO
 
 - **适用场景**:
   - 第三方后端服务集成
@@ -119,20 +109,102 @@ qwen-code-agent-sdk =
   - 会话管理
   - 错误处理与重试
 
-#### 访问模式
+#### 通信模式
 
-- **IPC 模式 (默认)**: SDK 启动本地 `qwen` 子进程,以 JSON Lines 协议进行进程间通信,适合 IDE 插件、企业内网脚本、桌面客户端等同机集成。
-- **嵌入式 RPC 模式**: 上层系统可暴露自定义 RPC/HTTP 接口,由宿主进程转发到 SDK,用于集中式部署或多租户管控。
+- **IPC 模式**: SDK 启动本地 `qwen` 子进程,以 JSON Lines 协议进行进程间通信。
 
 > 📘 IPC 模式的协议与最新 CLI IPC 草案详见《qwen-code-cli-output-format-stream-json-rfc_cn.md》。
 
 **集成方式**:
+
 ```python
 # 第三方通过 Agent SDK 集成
 from qwen_agent_client import QwenAgentClient
 client = QwenAgentClient(api_key="...", base_url="...")
 result = client.execute(task="...", context={...})
 ```
+
+## 各语言 SDK 技术选型
+
+### qwen-agent-sdk-python
+
+#### 运行时与分发
+
+- **语言要求**: Python 3.10+, 与 Anthropic Python SDK 一致, 保障 `typing.Annotated`, `match` 等语法可用。
+- **包结构**: 采用 `pyproject.toml` + `hatchling` 构建, 发布 `py.typed` 以提供类型提示, 命名空间为 `qwen_agent_sdk`。
+- **环境依赖**: 需预装 Node.js 与 `qwen-code` CLI, SDK 启动前通过 `which qwen` 或 `QWEN_BIN` 环境变量定位二进制。
+
+#### 核心依赖
+
+- `anyio>=4`: 与 Anthropic SDK 一致, 统一 async/await 事件循环并兼容 Trio。
+- `typing_extensions`: 兼容 3.10/3.11 的 `TypedDict`, `NotRequired` 能力。
+- `mcp>=0.1`: 复用 In-Process MCP Server 能力, 支持装饰器式工具定义。
+- `pydantic>=2` (新增): 用于严格校验 JSONL 消息、权限响应与 Hook payload。
+
+#### API 设计
+
+- **快速函数**: `async def query(...) -> AsyncIterator[Message]`, 语义与 Anthropic `query()` 对齐, 支持字符串与 `AsyncIterable` 输入。
+- **会话客户端**: `class QwenSDKClient`, 支持 `async with` 上下文、会话续写与中断, 暴露 `receive_response()` 流式读取。
+- **选项对象**: `QwenAgentOptions`, 对齐 TypeScript `AgentOptions`, 含 `system_prompt`, `setting_sources`, `permission_mode`, `cwd`, `fork_session`。
+- **工具注册**: `@tool` 装饰器 + `create_sdk_mcp_server`, 允许 Python 原生函数作为 CLI 工具。
+
+#### 技术实现要点
+
+- **Transport 抽象**: 提供 `StdIOSubprocessTransport`, 负责启动 `qwen` CLI、写入 JSONL、读取流式 chunk, 并将 CLI 事件映射为 Python 数据类。
+- **权限回调**: 设计 `CanUseTool` 协议, 输入工具名、payload、上下文, 返回 `PermissionResult`, 支持自动接受/拒绝与补充规则。
+- **Hook 体系**: 支持 `PreToolUse`、`PostToolUse`、`UserPromptSubmit` 等事件, 允许返回 JSON 指令修改会话 (参考 Anthropic Hook JSON)。
+- **可插拔日志**: 提供基于 `structlog` 的观察性接口, 默认输出标准 JSON 日志, 支持注入自定义 logger。
+- **错误恢复**: 针对 CLI 崩溃提供自动重试与会话 fork, 保存最后一次成功结果以便断点续传。
+
+#### 双向控制协议实现参考 (对齐 Claude Agent SDK)
+
+- **STDIO 对称信道**: 对齐《qwen-code-cli-output-format-stream-json-rfc_cn.md》定义的 `control_request`/`control_response` 语义, `SubprocessCLITransport` 始终通过同一 STDIN/STDOUT 管道处理正向/反向消息, 无需额外套接字。
+- **事件监听与解复用**: `Query._read_messages()` 按行读取 CLI 输出, 将 `type=control_request` 的 JSON 派发给 `_handle_control_request()`, 并通过 `pending_control_responses` + `request_id` 映射保证多请求并发时的正确回执。
+- **权限 / Hook / MCP 托管**: `_handle_control_request()` 将 `subtype` 映射到对应的回调: `can_use_tool` 触发 SDK 提供的权限协程, `hook_callback` 执行注册 Hook, `mcp_message` 则桥接到 in-process MCP Server (`tools/list`、`tools/call`、`initialize` 等)。处理结果统一写入 STDIN, 形成 `control_response` 行。
+- **初始化握手**: 流式模式下 `Query.initialize()` 先发起 `control_request{subtype:"initialize"}`, 同步 Hook 配置, 使 CLI 在后续事件中具备回调 SDK 的上下文与能力声明。
+- **故障回退**: 若回调抛异常, SDK 会返回 `subtype:error` 的 `control_response`, CLI 可依协议退回默认策略 (例如自动拒绝危险工具)。对齐 Claude SDK 的处理方式可降低双方协议分歧, 也是实现 SDK 端双向通信的参考蓝本。
+
+#### 测试与示例
+
+- **测试栈**: 采用 `pytest + pytest-asyncio` 与 `ruff + mypy` 形成与 Anthropic 仓库一致的质量门槛。
+- **示例**: 提供 `examples/quickstart.py`, `examples/mcp_calculator.py` 等, 展示工具注册、流式消费、权限回调落地。
+
+### qwen-agent-sdk-typescript
+
+#### 运行时与分发
+
+- **Node 要求**: Node.js 18+, 与 Anthropic TypeScript SDK 保持一致, 支持 `AbortController`, `EventTarget` 等 API。
+- **包结构**: 主包 `@qwen-agent/sdk` 使用 ESM 默认导出, 通过 `exports` 字段同时暴露 `import` 与 `require` 入口; 类型声明由 `TypeScript 5.x` 编译生成。
+- **构建流水线**: 采用 `tsup` 打包出 `dist/esm` 与 `dist/cjs`, 并生成 `dist/types`。
+
+#### 核心依赖
+
+- `@qwen-agent/protocol`: JSONL schema 与类型定义, 由核心仓库生成。
+- `@qwen-code/cli` (peerDependency): 由宿主应用负责安装, SDK 仅负责调度。
+- `zx`/`execa`: 子进程管理与跨平台管道封装。
+- `eventemitter3`: 会话事件派发。
+
+#### API 设计
+
+- **AgentClient**: `createAgentManager(options)` 返回具备 `createSession`, `run`, `forkSession` 能力的管理器, 语义对齐 Anthropic `ClaudeAgent`。
+- **流式 API**: `session.stream(task)` 返回 `AsyncIterable<AgentMessage>`, 支持 `for await` 迭代。
+- **权限体系**: 暴露 `onPermissionRequest` 回调, 允许应用返回 `allow/deny/ask` 与额外规则。
+- **自定义工具**: 支持内嵌 MCP 服务 (`defineTools`), 允许通过 TypeScript 函数注册工具, 与 CLI 会话共享上下文。
+- **设置源控制**: `settingSources` 默认关闭, 需显式声明 `["user","project","local"]` 方可加载对应文件。
+- **子代理**: `agents` 选项允许内联定义多代理拓扑, 结合 `forkSession` 进行会话分支。
+
+#### 技术实现要点
+
+- **子进程编排**: 使用 `execa` 启动 `qwen` CLI, 统一将 stdout 解析为 `AgentStreamChunk`, 并通过 `AbortSignal` 支持取消。
+- **心跳与超时**: 管理器维护 `result/heartbeat` 定时器, 超时自动触发重启与会话恢复。
+- **权限同步**: 将 `onPermissionRequest` 结果转为 JSONL `control_response`, 保证与 Python 绑定行为一致。
+- **调试工具**: 提供 `enableVerboseLogging()` 开关, 输出 CLI 命令、payload、耗时指标。
+- **测试矩阵**: 使用 `vitest` + `tsx` 覆盖, 结合 `@qwen-code/cli` mock 校验流式输出与权限回调。
+
+### 其它语言绑定 (TODO)
+
+- **Go/Java**: 仅保留协议占位, 等 TypeScript/Python SDK 发布 GA 后再依据业务需求补齐。
+- **统一目标**: 待声明的语言需消费同一 `@qwen-agent/protocol` 版本, 并复用当前 CLI 工具链, 不另起分支实现。
 
 ### 2. Qwen-Code Agent SDK (子进程调度层)
 
@@ -144,7 +216,7 @@ Qwen-Code Agent SDK 直接管理 qwen-code CLI 子进程,负责通信、生命�
 - **IPC 封装**:
   - 基于 STDIN/STDOUT 的 JSON Lines 协议,输入遵循 `docs/ipc/qwen-chat-request-schema.json`(扩展自 OpenAI `/chat/completions`,包含 `session_id`、`prompt_id`、`tool_call_id` 等会话字段)。
   - CLI 需提供 `--input-format {text,stream-json}` 与 `--output-format {text,stream-json,stream-chunk-json}` 参数,结构化模式自动禁用 TUI,仅 `text` 模式保留原有人机交互。
-  - 输出逐行写入 OpenAI 风格的 `chat.completion` / `chat.completion.chunk` 对象;首条响应需携带 `metadata.capabilities`、`metadata.protocol_version`、`output_format` 等握手信息。
+  - 输出逐行写入 OpenAI 风格的 `chat.completion` / `chat.completion.chunk` 对象;首条响应需在 `metadata` 中携带 `protocol_version`、`input_format`、`output_format` 以及 `capabilities`（需显式包含 `chat.completion.chunk` 能力位）等握手信息。
   - 事件语义需覆盖 `result/heartbeat`、`result/cancel`、`x-qwen-session-event` 与 `control_request/control_response`,并定义对应的错误对象与回退策略。
   - **当前状态**: qwen-code 仅支持简单的 STDIN 文本读取 (非 JSON Lines)
   - **需要工作**:
@@ -170,11 +242,13 @@ Qwen-Code Agent SDK 直接管理 qwen-code CLI 子进程,负责通信、生命�
     - 在工具执行流程中插入 Hook 点
 
 ### 3. Qwen-Code Workers 进程池
+
 热启动的 CLI 进程池,每个 Worker 独立运行。
 
 **环境说明**: Worker 本质是 qwen-code CLI 子进程,其容器/沙箱与工具桥接逻辑均由 CLI 自主管理,SDK 只负责通过 STDIN/STDOUT 进行调度与控制。
 
 **Worker 状态机**:
+
 ```
 空闲 (Idle)
   ↓ [新会话分配]
@@ -184,6 +258,7 @@ Qwen-Code Agent SDK 直接管理 qwen-code CLI 子进程,负责通信、生命�
 ```
 
 **关键特性**:
+
 - **独占机制**:一个 Worker 一次只能服务一个会话,保证会话隔离。
 - **会话绑定**:Worker 与会话 ID 绑定,期间不接受其他任务。
 - **复用机制**:
@@ -193,6 +268,7 @@ Qwen-Code Agent SDK 直接管理 qwen-code CLI 子进程,负责通信、生命�
   - 大幅减少冷启动时间,提高响应速度
 
 **Worker 复用流程**:
+
 ```
 1. 会话 A 结束 → Worker #1 状态变为 [空闲]
 2. 新会话 B 到达 → 协调器分配 Worker #1
@@ -202,6 +278,7 @@ Qwen-Code Agent SDK 直接管理 qwen-code CLI 子进程,负责通信、生命�
 ```
 
 **进程池配置**:
+
 - `min_workers`:最小保活 Worker 数量
 - `max_workers`:最大 Worker 数量上限
 - `idle_timeout`:空闲 Worker 超时回收时间 (默认 30 分钟)
@@ -212,11 +289,13 @@ Qwen-Code Agent SDK 直接管理 qwen-code CLI 子进程,负责通信、生命�
 ### 为什么需要 Worker 复用?
 
 **问题**:每次新会话启动全新进程会导致:
+
 - 进程冷启动耗时 (3-5 秒)
 - 模型加载耗时 (如果涉及本地模型)
 - 资源开销大 (频繁创建/销毁进程)
 
 **方案**:Worker 进程复用
+
 - 进程保持运行,会话结束后只清理会话上下文
 - 新会话到达时直接在现有进程中创建新会话
 - 响应速度提升 **10-20 倍**
@@ -269,6 +348,7 @@ worker_pool:
   - 可同步或流式获取会话输出
 
 **快速上手示例**:
+
 ```python
 from qwen_agent_sdk import QwenClient
 
@@ -289,6 +369,7 @@ with QwenClient(binary_path="qwen", model="qwen3-coder-plus") as client:
   - 便于集中化运营、统计与运维
 
 **服务封装伪代码**:
+
 ```typescript
 import Fastify from 'fastify';
 import { createAgentManager } from '@qwen-agent/sdk';
@@ -320,6 +401,7 @@ await app.listen({ port: 6001 });
 **依赖**: 无
 
 **任务**:
+
 1. 扩展 CLI 参数解析: 支持 `--input-format {text,stream-json}` 与 `--output-format {text,stream-json,stream-chunk-json}`,结构化模式自动禁用 TUI。
 2. 实现 `StdinReaderService`: 解析 `qwen-chat-request-schema` 请求,保留 `/`、`@`、`?` 命令即时反馈。
 3. 实现 `StdoutWriterService`: 输出携带握手元数据的 `chat.completion` / `chat.completion.chunk` JSON Lines,统一错误语义。
@@ -328,10 +410,11 @@ await app.listen({ port: 6001 });
 6. 编写 IPC 协议测试: 覆盖握手、结构化输入、chunk 输出与错误/控制事件。
 
 **可交付成果**:
+
 ```bash
 echo '{"model":"qwen-coder","messages":[{"role":"user","content":"你好"}],"session_id":"demo-session-1"}' | \
   qwen --input-format stream-json --output-format stream-json
 
 # 预期输出(逐行 JSON Lines)
-{"object":"chat.completion","id":"chatcmpl-demo","created":1739430000,"model":"qwen-coder","metadata":{"protocol_version":"1.0","capabilities":{"output_format":"stream-json"}},"choices":[{"index":0,"message":{"role":"assistant","content":"收到,开始处理。"},"finish_reason":"stop"}]}
+{"object":"chat.completion","id":"chatcmpl-demo","created":1739430000,"model":"qwen-coder","metadata":{"protocol_version":"1.0","input_format":"stream-json","output_format":"stream-json","capabilities":{"chat.completion":true,"chat.completion.chunk":true}},"choices":[{"index":0,"message":{"role":"assistant","content":"收到,开始处理。"},"finish_reason":"stop"}]}
 ```
