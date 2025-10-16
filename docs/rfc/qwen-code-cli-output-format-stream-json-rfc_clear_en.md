@@ -14,6 +14,28 @@
 - Keeps protocol behavior aligned with the TUI, adds JSON Lines output, symmetric input, and control channels to address community requests for `--input-format/--output-format json/stream-json`.
 - The document focuses on CLI capabilities and does not cover SDK internals.
 
+## Background and Scenarios
+
+### Issue 795 Overview
+- Community issue [#795](https://github.com/QwenLM/qwen-code/issues/795) requests `--input-format/--output-format json/stream-json`, aiming to mirror the Claude Code implementation so downstream programs can reliably consume structured IO.
+- This RFC expands the CLI while staying compatible with existing TUI behavior, giving SDKs and backends symmetric JSON protocols and message semantics.
+
+### Integration Scenarios
+- **Task-level staged handling**: SDK submits prompts one by one, receives multiple partial results, post-processes them, and finally presents them to end users.
+- **Task-level streaming**: SDK submits prompts and streams the CLI’s response directly to users for real-time visibility.
+- **Instruction shortcuts**: Third-party input boxes must support `/`, `@`, and `?` triggers with behavior identical to the TUI to guarantee a consistent UX.
+- **Terminal simulation**: Frontends such as xterm.js mimic terminal output while separating the input field from the display, yet still need full terminal semantics from the CLI.
+
+### Integration Approach
+- Third parties will rely on forthcoming multi-language `qwen-code-agent-sdk` packages.
+- The SDK spawns `qwen code` as a subprocess and uses STDIN/STDOUT for bidirectional IPC.
+- SDKs read the CLI’s structured output and handle errors and state transitions.
+- Upper-layer applications consume the SDK’s results and render them in their own UI or services.
+
+### Current Pain Points
+- The CLI currently emits human-oriented text, making structured consumption brittle.
+- There is no symmetric structured input protocol, preventing higher-level automation and tool orchestration.
+
 ## Goals and Scope
 
 | Type | Content |
@@ -44,6 +66,12 @@
 | `stream-json` | Message-level JSONL | Each line is a `chat.completion`, including initialization receipts, assistant replies, tool invocations, and closing summaries | Aligns with OpenAI `/chat/completions` |
 | `stream-chunk-json` | Incremental chunk JSONL | Each line is a `chat.completion.chunk`, with `choices[].delta` carrying token/block increments | Aligns with OpenAI streaming responses, with full session IDs |
 
+### Consumption Strategy
+
+- **Message-level JSONL (`stream-json`)**: Suited to third-party backends or CLI wrappers that process results in stages; compatible with existing JSONL pipelines and considered the default structured mode.
+- **Incremental chunks (`stream-chunk-json`)**: Targets IDE/UI scenarios that need “display as it streams”; SDKs should watch for `chat.completion.chunk` events and finalize once the terminal `finish_reason` arrives.
+- **Terminal semantics parity**: Regardless of whether the CLI runs in text or structured mode, `stream-json` / `stream-chunk-json` must cover every semantic emitted by the TUI (text, ANSI/Vt100 control codes, tool hints, exit codes, etc.) using `choices[].message.content` / `choices[].delta.content` plus `choices[].delta.annotations` (e.g. `{"type":"x-qwen-ansi","value":"\u001b[32m"}`) so frontends like xterm.js can faithfully reproduce the terminal experience.
+
 ### `stream-json` Example
 
 ```json
@@ -60,6 +88,8 @@
 - Optional `annotations` and `spans` fields describe terminal styling (see below).
 
 ## Event Payloads and Annotations
+
+`packages/cli/src/nonInteractiveCli.ts` and `packages/cli/src/ui/utils/ConsolePatcher.ts` jointly decide how text-mode output is produced: model content is appended to `stdout` via `GeminiEventType.Content`, tool execution state and logs are printed to `stderr` through `ConsolePatcher`, and tool result structures (`ToolResultDisplay`, etc.) are rendered by `packages/cli/src/ui/hooks/useReactToolScheduler.ts`. To ensure `stream-json` / `stream-chunk-json` covers every semantic, we reuse the OpenAI `annotations` field with the following conventions:
 
 | Type | Key Fields | Purpose |
 | --- | --- | --- |
@@ -93,6 +123,7 @@
 - `source`: `assistant`, `tool`, `console`, `system`, enabling layered display on the frontend.
 - `spans.style.theme_token`: Reuse CLI themes (`AccentGreen`, `DiffAdded`, etc.).
 - `ansi`: Positions of raw ANSI sequences for frontends to replay.
+- `console_level`: When `source=console`, takes values `log`, `warn`, `error`, `info`, or `debug` so that downstream consumers can mirror `ConsolePatcher` behavior.
 - `exit_code`: Provided when `source=system` and the flow finishes.
 - `prompt_id`: Associates the record with a specific turn.
 
@@ -124,8 +155,10 @@
 ```
 
 - `status` follows `ToolCallStatus` (`Pending`, `Executing`, `Success`, `Error`, `Canceled`, `Confirming`).
+- `tool_call_id` reuses the OpenAI schema field; together with `session_id` it uniquely locates a call, and can be reused even in test/non-session modes.
 - `result_display` supports unions such as `string`, `file_diff`, `todo_list`, `plan_summary`, and `task_execution`.
-- `confirmation` describes diffs, commands, or MCP information awaiting approval; `pending=true` means execution has not started.
+- `confirmation` serializes the relevant `ToolCallConfirmationDetails` (diffs, commands, MCP payloads) so third parties can surface approval dialogs.
+- `pending=true` indicates the call is still validating/queued and matches `ToolCallStatus.Pending`.
 - `timestamp` is used for ordering and matches records from `useReactToolScheduler`.
 
 ### Thought and Session Events
@@ -184,11 +217,11 @@
 - `session_id`: Session identifier (`config.getSessionId()`); pass `"_new"` to create a new session.
 - `prompt_id`: Distinguishes turns; default format `<session_id>########<turn>`, and must be reused when tools continue the conversation.
 - `input.origin`: `user` / `tool_response` / `system`, determining how the session continues.
-- `input.parts`: Compatible with `@google/genai` PartListUnion, allowing `text`, `function_response`, `file_data`, and more.
+- `input.parts`: Compatible with `@google/genai` PartListUnion, allowing `text`, `function_response`, `file_data`, etc. When `origin="user"`, the CLI concatenates all text parts in order and reuses the same semantics as `prepareQueryForGemini`.
 - `options`: Per-request overrides (model, sampling, tool allowlist).
 - Extended fields:
   - `tool_call_id`: Required when `origin=tool_response` to match output events.
-  - `continuation`: Boolean equivalent to `submitQuery(...,{isContinuation:true})`.
+  - `continuation`: Boolean equivalent to `submitQuery(...,{isContinuation:true})`; if omitted, the CLI infers continuation based on `origin` and command context.
   - `tool_request`: Mirrors `ToolCallRequestInfo` to support concurrent tools and sub-agents.
 
 ### Commands and `@` References
@@ -197,6 +230,11 @@
 | --- | --- | --- |
 | Implicit Parsing | `origin="user"` with text starting with `/`/`?`/`@` | CLI automatically follows the slash/at flow, invoking logic such as `handleAtCommand` |
 | Explicit Declaration | Describe the command in `input.command` | Recommended for third parties to avoid string parsing ambiguities |
+
+- `command.kind`: `slash` / `at`, matching the TUI command taxonomy.
+- `command.path`: For slash commands, represents the hierarchical command array (mirrors `commandPath`); omit for `at`.
+- `command.args`: Remaining argument string that the CLI will parse exactly as in TUI mode.
+- `command.references`: When `kind="at"`, can directly provide resolved references such as `{ "original":"@src/main.ts", "resolved":"src/main.ts" }`; if omitted, the CLI falls back to `handleAtCommand` and `useAtCompletion` for automatic resolution.
 
 Explicit command example:
 
@@ -216,6 +254,91 @@ Explicit command example:
 }
 ```
 
+- CLI outputs the corresponding `result/command`:
+
+```jsonc
+{
+  "type": "result/command",
+  "session_id": "session-123",
+  "prompt_id": "session-123########8",
+  "command": {
+    "kind": "slash",
+    "path": ["chat", "list"],
+    "args": ""
+  },
+  "result": {
+    "type": "message",
+    "level": "info",
+    "content": "The current session has 3 history records."
+  }
+}
+```
+
+- `command.result.type` supports enums such as `message`, `dialog`, `tool`, and `submit_prompt` for easier UI rendering.
+- If the command triggers a model call, subsequent output includes `assistant`, `tool_call`, and `result/*` events, following the same order as the TUI.
+
+Explicit `@` reference example:
+
+```jsonc
+{
+  "session_id": "session-123",
+  "input": {
+    "origin": "user",
+    "parts": [{"type": "text", "text": "Please review @src/main.py"}],
+    "command": {
+      "kind": "at",
+      "references": [
+        {"original": "@src/main.py", "resolved": "src/main.py"}
+      ]
+    }
+  }
+}
+```
+
+- The CLI uses the explicit `references` to read files; if missing, it falls back to automatic parsing, preserving TUI tolerance for partial paths.
+
+### SDK-Side Command Coordination
+
+| `command.result.type` | Description | SDK Guidance |
+| --- | --- | --- |
+| `handled` | Command completed fully inside the CLI | No extra action |
+| `message` | Informational or error message | Display a notification in the UI |
+| `dialog` (`auth`/`theme`/`editor`/`privacy`/`settings`/`model`/`subagent_create`/`subagent_list`/`help`) | Requires dialogs or navigation | Present the appropriate UI panel |
+| `tool` | Triggers a tool call | Convert `tool_request` or command args into a tool request and monitor results |
+| `submit_prompt` | Immediately sends a PartListUnion to the model | Submit `content` as the next input with `continuation=true` |
+| `load_history` | Reset or load specified session history | Refresh or reload history views |
+| `quit` / `quit_confirmation` | Exit flow or await user confirmation | Control the host app lifecycle and return confirmation |
+| `confirm_shell_commands` | Shell commands awaiting approval | Show an approval dialog; resend with `approvedCommands` / `confirmationOutcome` once approved |
+| `confirm_action` | General confirmation prompt | Provide confirmation UI and return the outcome |
+
+- SDKs should expose a unified command API that maps user input to the structure above and drives local UI or follow-up requests based on the resulting action.
+- When commands kick off further model interactions (e.g., `/submit`, expanded `@file`), the CLI keeps streaming `assistant`, `tool_call`, and `result/*` events in the same order as the TUI, letting third parties replicate the interaction with pure text input plus JSON output.
+
+### STDIN Command Acknowledgement
+
+- With `--input-format=stream-json`, the CLI must still acknowledge `/`, `?`, and `@` commands immediately, reusing `useSlashCommandProcessor` and `handleAtCommand`.
+- After parsing, the CLI emits structured responses such as:
+
+```jsonc
+{
+  "type": "result/command",
+  "session_id": "session-123",
+  "prompt_id": "session-123########8",
+  "command": {
+    "kind": "slash",
+    "path": ["chat", "list"],
+    "args": ""
+  },
+  "result": {
+    "type": "message",
+    "level": "info",
+    "content": "The current session has 3 history records."
+  }
+}
+```
+
+- The `result` field matches the `command.result.type` table above for consistent UI handling.
+- If commands lead to continued interaction, the CLI streams the rest of the turn with matching session fields.
 CLI outputs the corresponding `result/command`:
 
 ```jsonc
@@ -286,8 +409,86 @@ CLI outputs the corresponding `result/command`:
 }
 ```
 
-- `suggestions` reuses the TUI `Suggestion` structure; `status="loading"` means the CLI is preparing data, and `error` includes a message.
-- Requests may be repeated when the trigger text changes; send `command_hint_cancel` to cancel.
+### Suggestion Request Example (`@src/co`)
+
+```jsonc
+{
+  "type": "command_hint_request",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "at",
+  "text": "@src/co",
+  "cursor": 7,
+  "context": {
+    "cwd": "/workspace/demo",
+    "selected_text": ""
+  }
+}
+```
+
+### Suggestion Response Example (`@src/co`)
+
+```jsonc
+{
+  "type": "result/command_hint",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "at",
+  "status": "ok",
+  "suggestions": [
+    {"label": "src/components/", "value": "src/components/"},
+    {"label": "src/components/Button.tsx", "value": "src/components/Button.tsx"},
+    {"label": "src/components/Button with spaces.tsx", "value": "src/components/Button\\ with\\ spaces.tsx"}
+  ],
+  "metadata": {
+    "is_perfect_match": false
+  }
+}
+```
+
+### Suggestion Request Example (`/?`)
+
+```jsonc
+{
+  "type": "command_hint_request",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "slash",
+  "text": "/?",
+  "cursor": 2,
+  "context": {
+    "cwd": "/workspace/demo",
+    "selected_text": ""
+  }
+}
+```
+
+### Suggestion Response Example (`/?`)
+
+```jsonc
+{
+  "type": "result/command_hint",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "slash",
+  "status": "ok",
+  "suggestions": [
+    {
+      "label": "help",
+      "value": "help",
+      "description": "For help on Qwen Code.",
+      "matchedIndex": 0
+    }
+  ],
+  "metadata": {
+    "is_perfect_match": true
+  }
+}
+```
+
+- `suggestions` reuse the TUI `Suggestion` structure; `status="loading"` indicates the CLI is preparing data (for example while `useAtCompletion` builds the file index), and `error` responses include a message.
+- The CLI reuses `useSlashCompletion` and `useAtCompletion` to generate hints; these requests never touch `GeminiChat` nor session history, and `prompt_id` may carry a `_preview` suffix that is echoed back.
+- Triggers can fire repeatedly as the text or cursor changes; send `{"type":"command_hint_cancel", ...}` to stop long-running lookups.
 
 ### Heartbeat Request and Response
 
@@ -297,7 +498,8 @@ CLI outputs the corresponding `result/command`:
 ```
 
 - Third parties can configure timeouts (e.g., 10 seconds) to detect CLI hangs and restart the process.
-- A future plan allows SDKs to customize heartbeat frequency.
+- The CLI responds with the same `result/heartbeat` shape and may proactively push keepalive events in the background.
+- `@third-party/anthropics/claude-agent-sdk-python` currently lacks a heartbeat implementation; the P1.1 rollout must define default intervals, timeout policy, and whether SDKs can customize the heartbeat cadence.
 
 ### Interrupt Example
 
@@ -312,6 +514,8 @@ CLI outputs the corresponding `result/command`:
 
 - The CLI must call `cancelOngoingRequest`, abort the `AbortController`, finalize history items, and emit `result/cancel`.
 - If no request can be canceled, the CLI should return `{"type":"result/cancel","status":"noop"}` with an explanation.
+- When the underlying stream reports `GeminiEventType.UserCancelled`, the CLI also emits `{"type":"x-qwen-session-event","event":"USER_CANCELLED","message":"User cancelled the request."}` so clients can update the session state.
+- Double-tapping ESC to clear the input is handled on the client side; structured integrations can replicate that locally without sending additional CLI messages.
 
 ## Event Categories and Channels
 
@@ -321,8 +525,22 @@ CLI outputs the corresponding `result/command`:
 | Request Events | SDK/Third Party → STDIN | `command_hint_request`, `heartbeat_request`, `control/cancel` | CLI returns the corresponding `result/*` | Trigger immediate actions or controls |
 | Control Channel | CLI ↔ STDIN/STDOUT | `control_request` / `control_response` | Must match `request_id` | Permission approvals, hook callbacks, MCP calls |
 
-- Events are transported as unified JSON Lines; SDKs should route based on `type`/`subtype`.
-- Control channel events are not recorded in conversation history, consistent with TUI behavior, and must implement timeouts and error fallbacks.
+These categories can also be viewed as three event mechanisms:
+
+1. **Result events (`result/*`)**  
+   - CLI → STDOUT one-way announcements such as `result/command`, `result/command_hint`, `result/heartbeat`, `result/cancel`, `x-qwen-session-event`.  
+   - Carry command output, hints, heartbeat results, and session state updates. No acknowledgment is required.
+
+2. **Request events (`*request`)**  
+   - SDK/third party → STDIN directives like `command_hint_request`, `heartbeat_request`, or `control/cancel`.  
+   - Trigger immediate CLI behavior, and each request must be answered with the corresponding `result/*`.
+
+3. **Control channel events (`control_request` / `control_response`)**  
+   - CLI outputs `control_request`, external integrations respond with matching `control_response`; used for approvals, hook callbacks, MCP JSON-RPC, etc.  
+   - Each carries a unique `request_id`, requires timely responses, and bypasses conversation history to stay in sync with TUI behavior.
+
+- All events travel over a unified JSON Lines protocol; route them by `type`/`subtype`.  
+- Control channel participants must implement timeout and error fallback strategies to avoid blocking the CLI.
 
 ## Control Requests and Responses
 
@@ -370,7 +588,11 @@ CLI outputs the corresponding `result/command`:
 
 - If a callback fails, the SDK must return `{"subtype":"error","error":{"message":"...","retryable":false}}`, and the CLI will follow the safety fallback (auto-deny or report failure).
 - MCP integration: `subtype:"mcp_message"` carries JSON-RPC (`tools/list`, `tools/call`, etc.), and the SDK wraps results as `mcp_response` inside `control_response`.
-- The CLI should add a unified dispatcher so the TUI and structured modes share the same logic.
+- Current state: the CLI primarily emits one-way output while the TUI handles confirmations inline, so dual-channel hooks similar to Claude Code still need to be generalized.
+- Design requirement: whenever the CLI needs external confirmation, it should emit a `control_request` and wait for the matching `control_response`, covering tool approvals, hook callbacks, and MCP JSON-RPC exchanges.
+- Coverage examples: `/confirm_shell_commands`, `confirm_action`, `quit_confirmation`, tool permission approvals, sub-agent orchestration, and future dialogs/forms/identity flows.
+- Fallback policy: if the control channel is disabled, the CLI must explicitly reject risky actions or state “unavailable in structured mode” via `result/command` instead of failing silently.
+- Follow-up tasks: (1) add JSON Schemas for `control_request` / `control_response`; (2) build a unified dispatcher so the TUI and CLI share the same logic; (3) extend SDKs with listeners/hooks that surface the requests to upper-layer UIs.
 
 ## Version Negotiation and Error Semantics
 
