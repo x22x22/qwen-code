@@ -131,11 +131,12 @@ flowchart LR
 - **实现要点**：
   - `StdIOSubprocessTransport` 启动 `qwen` CLI，写入 JSONL，读取流式 chunk。
   - `_handle_control_request()` 对 `can_use_tool`、`hook_callback`、`mcp_message` 等 `subtype` 执行回调，并写入 `control_response`。
+  - **Hook 体系**：支持 `PreToolUse`、`PostToolUse`、`UserPromptSubmit` 等事件，可返回 JSON 指令以调整会话流程，与 Anthropic Hook JSON 保持一致。
   - `Query.initialize()` 首次发送 `control_request{subtype:"initialize"}`，同步 Hook 配置与能力声明。
   - 支持 `PermissionResult`、Hook JSON 与 MCP JSON-RPC 的统一封装。
 - **日志与可观测**：
   - 默认输出结构化 JSON 日志，支持 `structlog` 注入。
-  - 可通过 `options.stderr` 捕获 CLI 原始错误流。
+  - **轻量日志约定**：遵循 `logging` 风格输出结构化 JSON，可通过 `options.stderr`/`debug_stderr` 捕获 CLI 原始错误流，加速排障。
   - 规划内置 OpenTelemetry Tracer/Meter，记录会话耗时、传输错误、Worker 利用率。
 - **健壮性**：
   - CLI 崩溃时自动重试与会话 fork，保存最近成功结果实现断点续传。
