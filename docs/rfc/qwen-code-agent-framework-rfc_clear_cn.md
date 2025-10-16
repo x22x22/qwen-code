@@ -99,7 +99,7 @@ flowchart LR
 
 | 能力域 | 关键内容 | 当前能力 | 后续演进 |
 | --- | --- | --- | --- |
-| 会话调度 | 会话路由、Worker 绑定、复用策略 | SDK 侧提供 Router、Worker 池调度 | 增强会话分支/子代理调度 |
+| 会话调度 | 会话路由、Worker 绑定、复用策略 | SDK 侧提供 Router、Worker 池调度 | 增强会话分支/子 Agent 调度 |
 | 进程治理 | 子进程启动、监控、重启 | ProcessMgr 负责生命周期与资源限制 | 引入资源配额、故障自动隔离 |
 | 控制协议 | 权限回调、Hook、MCP | ControlPlane 统一处理 `control_request` | 扩展更多 Hook 点与审批策略 |
 | IPC 协议 | JSON Lines、输入输出格式 | IPC 层实现 `stream-json`/`stream-chunk-json` | 丰富事件类型、协议版本协商 |
@@ -107,6 +107,200 @@ flowchart LR
 
 - 会话调度与控制层需要保证 Worker 独占机制、会话隔离与资源回收。
 - 控制协议以 request/response 模型运行，SDK 必须在超时前回写 `control_response`，确保 CLI 不被阻塞。
+
+## Agentic 会话能力
+
+| 能力块 | 设计重点 | 接口/结构 |
+| --- | --- | --- |
+| 会话循环 | 状态化 `QwenAgentClient`，区分连接与消息流阶段 | `connect()`、`disconnect()`、`Query.initialize()` |
+| 会话上下文 | 支持异步上下文管理与资源释放 | `__aenter__` / `__aexit__`、`async with QwenAgentClient` |
+| 消息流处理 | 同一会话内追加输入并消费流式输出 | `query()`、`stream_input()`、`receive_messages()`、`receive_response()` |
+| 动态控制 | 运行时切换模型/权限、触发中断并回读初始化能力 | `interrupt()`、`set_permission_mode()`、`set_model()`、`get_server_info()` |
+| 传输抽象 | 可插拔 Transport 支持本地/远程 CLI 与缓冲守护 | `Transport`、`SubprocessCLITransport`、`max_buffer_size` 校验 |
+
+### 会话循环与上下文
+
+- `QwenAgentClient.connect()` 支持字符串与异步流模式，可在首次 `initialize` 时注入 Hook 与 SDK MCP Server，保障 IDE/服务多轮会话。
+- `disconnect()` 清理 `_query` 及 Transport，结合 `async with` 自动化连接/释放流程，避免遗留子进程。
+- 参数校验需提前阻止互斥选项（如 `can_use_tool` 与 `permission_prompt_tool_name` 同时启用），提升配置体验。
+
+### 消息流处理
+
+- `query()` 自动补全 `session_id` 并写入 JSONL，支持脚本/界面按需追加消息。
+- `stream_input()` 负责增量写入并在异常时清空缓冲、记录调试日志，维持长流程稳定性。
+- `receive_messages()` 遍历所有事件，`receive_response()` 检测到 `ResultMessage` 后提前收束，方便界面感知一次回答完成。
+- `include_partial_messages` 选项允许透传增量 chunk，配合 `stderr`/`debug_stderr` 捕获底层诊断输出，便于复杂界面实时渲染。
+
+### 动态控制接口
+
+- `_send_control_request` 支持 `interrupt`、`set_permission_mode`、`set_model` 等子类型，实现手动打断、权限模式切换与热切模型。
+- `get_server_info()` 回读 CLI 初始化能力（协议版本、指令集等），用于动态配置前端或策略。
+- `async query(...)->AsyncIterator` 暴露在脚本化场景，实现一次性消费完整响应，同时保留自定义 Transport 的可能。
+
+### 单次查询与多 Agent 编排
+
+- `query()` 快速入口封装了会话生命周期，适合集成脚本或批量任务；当传入自定义 `Transport` 时可复用远程 CLI 或 Agent 服务。
+- `agents` 配置将多 Agent 拓扑映射到 CLI `--agents` 参数，结合 `fork_session` 支持会话分叉与子 Agent 路由。
+- CLI 命令生成时需根据 `setting_sources`、`allowed_tools`、`mcp_servers` 等选项拼装 JSON，保证 SDK 与 CLI 能力一致。
+
+### Hook 与 MCP 桥接
+
+- Hook 初始化阶段将 `HookMatcher` 列表转换为 `hookCallbackIds`，`hook_callback` 事件据此回调宿主逻辑，支持 `PreToolUse`、`PostToolUse`、`UserPromptSubmit` 等关键节点。
+- SDK 侧 `create_sdk_mcp_server`/`defineTools` 在宿主进程构建 MCP Server，`mcp_message` 请求触发 `tools/list`、`tools/call`、`initialize` 等 JSON-RPC，避免额外子进程。
+- 权限审批通过 `PermissionResultAllow`/`PermissionResultDeny` 及 `PermissionUpdate` 结构返回细粒度策略，可在 Hook 或工具回调中按需调整。
+- **示例：PreToolUse 与 UserPromptSubmit 组合**（参考 `third-party/anthropics/claude-agent-sdk-python/examples/hooks.py`）：
+  ```python
+  import asyncio
+  from qwen_agent_sdk import HookContext, HookMatcher, QwenAgentOptions, QwenSDKClient
+
+
+  async def block_risky_bash(
+      input_data: dict[str, object],
+      tool_use_id: str | None,
+      context: HookContext,
+  ) -> dict[str, object]:
+      command = input_data.get("command", "") if isinstance(input_data, dict) else ""
+      if isinstance(command, str) and "rm -rf" in command:
+          return {
+              "hookSpecificOutput": {
+                  "hookEventName": "PreToolUse",
+                  "permissionDecision": "deny",
+                  "permissionDecisionReason": "阻止危险删除命令",
+              }
+          }
+      return {}
+
+
+  async def inject_user_memory(
+      input_data: dict[str, object],
+      tool_use_id: str | None,
+      context: HookContext,
+  ) -> dict[str, object]:
+      return {
+          "hookSpecificOutput": {
+              "hookEventName": "UserPromptSubmit",
+              "additionalContext": "请牢记用户最喜欢的颜色是蓝色。",
+          }
+      }
+
+
+  options = QwenAgentOptions(
+      allowed_tools=["Bash"],
+      hooks={
+          "PreToolUse": [HookMatcher(matcher="Bash", hooks=[block_risky_bash])],
+          "UserPromptSubmit": [HookMatcher(matcher=None, hooks=[inject_user_memory])],
+      },
+  )
+
+
+  async def main() -> None:
+      async with QwenSDKClient(options=options) as client:
+          await client.query("尝试运行命令: rm -rf /tmp")
+          async for message in client.receive_response():
+              ...
+
+
+  asyncio.run(main())
+  ```
+
+### 传输层扩展
+
+- `Transport` 抽象允许替换默认的 `SubprocessCLITransport`，以适配远程 CLI、Agent 服务或容器托管场景。
+- 传输层在握手前执行版本检测与 `max_buffer_size` 限制，输出超限时抛出结构化错误并清理缓冲，防止内存膨胀。
+- 可通过选项控制工作目录、环境变量及 stderr 捕获，为 IDE 与服务端部署提供灵活拓扑。
+- `SubprocessCLITransport` 构建 CLI 命令时需注入 `--mcp-config`、`--agents`、`--setting-sources` 等参数，并在环境变量中写入 `CLAUDE_CODE_ENTRYPOINT`、自定义 `env`、`user` 配置以确保子进程能力对齐。
+- **示例：自定义远程 Transport**（参考 `third-party/anthropics/claude-agent-sdk-python/src/claude_agent_sdk/_internal/transport/__init__.py`）：
+  ```python
+  import json
+  from collections.abc import AsyncIterator
+  import httpx
+  from qwen_agent_sdk import QwenAgentOptions, QwenSDKClient
+  from qwen_agent_sdk.transport import Transport
+
+
+  class RemoteHTTPTransport(Transport):
+      def __init__(self, endpoint: str) -> None:
+          self._client = httpx.AsyncClient(base_url=endpoint, timeout=30.0)
+          self._ready = False
+
+      async def connect(self) -> None:
+          self._ready = True
+
+      async def write(self, data: str) -> None:
+          await self._client.post("/ingress", content=data.encode("utf-8"))
+
+      def read_messages(self) -> AsyncIterator[dict[str, object]]:
+          async def iterator() -> AsyncIterator[dict[str, object]]:
+              async with self._client.stream("GET", "/egress") as response:
+                  async for line in response.aiter_lines():
+                      if line:
+                          yield json.loads(line)
+          return iterator()
+
+      async def close(self) -> None:
+          await self._client.aclose()
+          self._ready = False
+
+      def is_ready(self) -> bool:
+          return self._ready
+
+      async def end_input(self) -> None:
+          await self._client.post("/ingress/close")
+
+
+  transport = RemoteHTTPTransport("https://cli-gateway.internal")
+  options = QwenAgentOptions(system_prompt="所有命令都通过远程 CLI 网关执行。")
+
+
+  async with QwenSDKClient(options=options, transport=transport) as client:
+      await client.query("读取 README.md 并总结三条要点。")
+      async for message in client.receive_response():
+          ...
+  ```
+
+### 调试与环境注入
+
+- CLI 编排需根据 `QwenAgentOptions` 生成完整命令列，区分流式与一次性执行（`--input-format stream-json` 与 `--print`）。
+- `options.stderr` 与 `debug_stderr` 支持在 SDK 侧接管 CLI 调试输出，结合 anyio TaskGroup 实时读取 stderr 流。
+- `cwd`、`env`、`user` 等参数决定子进程工作目录与权限边界，SDK 应在启动时显式传入并在断连时回收资源。
+- **示例：错误回调与重试**（参考 `third-party/claude-agent-sdk-python-demo/add_my_permission.py`）：
+  ```python
+  import anyio
+  from qwen_agent_sdk import (
+      PermissionDecision,
+      PermissionRequest,
+      PermissionUpdate,
+      QwenAgentOptions,
+      QwenSDKClient,
+  )
+
+
+  async def decide_permission(request: PermissionRequest) -> PermissionDecision:
+      if request.tool_name == "Write" and request.input and "rm -rf" in str(request.input):
+          return PermissionDecision(allow=False, reason="拒绝可能破坏工作的命令")
+      return PermissionDecision(allow=True, updates=[PermissionUpdate(mode="allow")])
+
+
+  async def main() -> None:
+      options = QwenAgentOptions(
+          allowed_tools=["Read", "Write"],
+          permission_callback=decide_permission,
+          permission_mode="ask",
+      )
+
+      async with QwenSDKClient(options=options) as client:
+          try:
+              await client.query("删除所有临时文件并写入新的日志")
+              async for message in client.receive_response():
+                  ...
+          except Exception:
+              await client.query("改为仅清理 ./tmp 目录")
+              async for message in client.receive_response():
+                  ...
+
+
+  anyio.run(main)
+  ```
 
 ## SDK 实现概览
 
@@ -144,7 +338,105 @@ flowchart LR
 - **测试体系**：
   - `pytest + pytest-asyncio` 覆盖核心流程。
   - `ruff + mypy` 保证代码质量。
-  - 示例：`examples/quickstart.py`、`examples/mcp_calculator.py` 展示流式消费、权限回调与工具注册。
+- **示例：快速流式对话**（参考 `third-party/anthropics/claude-agent-sdk-python/examples/quick_start.py`）：
+  ```python
+  import anyio
+  from qwen_agent_sdk import (
+      AssistantMessage,
+      QwenAgentOptions,
+      ResultMessage,
+      TextBlock,
+      query,
+  )
+
+
+  async def main() -> None:
+      options = QwenAgentOptions(
+          system_prompt="你是一名示例助手，回答保持简洁。",
+          allowed_tools=["Read"],
+          max_turns=1,
+      )
+
+      async for message in query(prompt="2 + 2 等于多少？", options=options):
+          if isinstance(message, AssistantMessage):
+              for block in message.content:
+                  if isinstance(block, TextBlock):
+                      print(block.text)
+          elif isinstance(message, ResultMessage) and message.total_cost_usd:
+              print(f"本轮花费: ${message.total_cost_usd:.4f}")
+
+
+  anyio.run(main)
+  ```
+- **示例：多 Agent 与设置源**（参考 `third-party/anthropics/claude-agent-sdk-python/examples/agents.py`、`third-party/anthropics/claude-agent-sdk-python/examples/setting_sources.py`）：
+  ```python
+  from qwen_agent_sdk import AgentDefinition, QwenAgentOptions, query
+
+
+  options = QwenAgentOptions(
+      agents={
+          "doc-writer": AgentDefinition(
+              description="输出结构化说明",
+              prompt="你是资深文档工程师，请附带步骤解释。",
+              tools=["Read", "Write"],
+          ),
+          "tester": AgentDefinition(
+              description="生成并运行测试",
+              prompt="你负责编写测试并验证结果。",
+              tools=["Read", "Write", "Bash"],
+          ),
+      },
+      setting_sources=["user", "project"],
+  )
+
+
+  async for message in query(
+      prompt="请调用 doc-writer 说明 AgentDefinition 的用途。",
+      options=options,
+  ):
+      ...
+  ```
+- **示例：内嵌 MCP 工具**（参考 `third-party/anthropics/claude-agent-sdk-python/examples/mcp_calculator.py`）：
+  ```python
+  from qwen_agent_sdk import (
+      AssistantMessage,
+      QwenAgentOptions,
+      QwenSDKClient,
+      TextBlock,
+      create_sdk_mcp_server,
+      tool,
+  )
+
+
+  @tool("add", "计算两个数之和", {"a": float, "b": float})
+  async def add_numbers(args: dict[str, float]) -> dict[str, object]:
+      total = args["a"] + args["b"]
+      return {"content": [{"type": "text", "text": f"{args['a']} + {args['b']} = {total}"}]}
+
+
+  calculator = create_sdk_mcp_server(
+      name="calculator",
+      version="1.0.0",
+      tools=[add_numbers],
+  )
+
+
+  options = QwenAgentOptions(
+      mcp_servers={"calc": calculator},
+      allowed_tools=["mcp__calc__add"],
+  )
+
+
+  async with QwenSDKClient(options=options) as client:
+      await client.query("请调用 mcp__calc__add 计算 6 + 7。")
+      async for message in client.receive_response():
+          if isinstance(message, AssistantMessage):
+              for block in message.content:
+                  if isinstance(block, TextBlock):
+                      print(block.text)
+          else:
+              ...
+  ```
 
 ### TypeScript SDK 细节
 
@@ -156,7 +448,7 @@ flowchart LR
   - `onPermissionRequest`：以 `allow/deny/ask` + 规则返回权限决策。
   - `settingSources`：默认关闭，需要显式声明 `["user","project","local"]` 等条目才会加载对应设置文件。
   - `defineTools`：注册 MCP 工具，与 CLI 会话共享上下文。
-  - `agents` 选项：支持内联多代理拓扑，结合 `forkSession` 构建子代理。
+  - `agents` 选项：支持内联多 Agent 拓扑，结合 `forkSession` 构建子 Agent。
 - **实现要点**：
   - 使用 `execa` 启动 CLI，统一解析 stdout 为 `AgentStreamChunk`。
   - `ProcessTransport` 逐行解码 stdout (`JSON.parse`)，通过 `EventEmitter` 推送 `control_request`、`result/*`、`chat.completion*` 事件，所有反向 `control_response` 共用子进程 stdin。
@@ -207,6 +499,16 @@ sequenceDiagram
 
 - 初始化阶段通过 `control_request{subtype:"initialize"}` 同步 Hook 配置与能力声明。
 - 回调异常时，SDK 需记录日志并返回 `control_response{subtype:"error"}`，CLI 遵循安全回退策略。
+
+| `control_request.subtype` | 输入要点 | SDK 响应约束 | 说明 |
+| --- | --- | --- | --- |
+| `initialize` | 携带 `hooks` 配置、可选 MCP 能力声明 | 返回 `control_response` 确认或报错；存档 `_initialization_result` | 需将 `HookMatcher` 中的回调映射为 `hookCallbackIds`，便于后续触发 |
+| `can_use_tool` | 提供 `tool_name`、`input`、`permission_suggestions` | 返回 `behavior=allow/deny`，可附带 `updatedInput`、`updatedPermissions` | `updatedPermissions` 由 `PermissionUpdate` 数组组成，支持规则/目录/模式调整 |
+| `hook_callback` | 提供 `callback_id`、Hook 输入上下文 | 查找对应回调并返回 JSON 结果 | 需在连接阶段缓存回调映射，未命中应返回结构化错误 |
+| `mcp_message` | 提供 `server_name`、`message` JSON-RPC | 调用 SDK 内置 MCP server，封装 `mcp_response` | 支持 `initialize`、`tools/list`、`tools/call` 等标准方法，出错时返回 JSON-RPC 错误对象 |
+
+- `PermissionUpdate` 结构支持 `addRules`、`replaceRules`、`removeRules`、`setMode`、`addDirectories`、`removeDirectories` 等类型，需精确传递规则内容与目录集合以满足企业级权限治理。
+- Hook 配置允许多事件、多匹配器组合：`HookMatcher.matcher` 指定匹配条件，`hooks` 填写回调函数列表，SDK 在初始化时生成回调 ID，并在 `hook_callback` 阶段路由执行。
 
 ## 通信模式与 MCP 能力
 
@@ -321,6 +623,63 @@ with QwenClient(binary_path="qwen", model="qwen3-coder-plus") as client:
 
 - 第三方程序可依赖 `qwen-agent-sdk` 统一管理会话、工具与权限策略。
 - SDK 需支持会话重放与取消、心跳维持与超时控制。
+- **示例：一体化会话脚手架**（参考 `third-party/claude-agent-sdk-python-demo/quick_start_example.py`）：
+  ```python
+  import anyio
+  from qwen_agent_sdk import (
+      AssistantMessage,
+      QwenAgentOptions,
+      QwenSDKClient,
+      TextBlock,
+      create_sdk_mcp_server,
+      query,
+      tool,
+  )
+
+
+  @tool("get_system_info", "获取系统信息", {})
+  async def get_system_info(_: dict[str, object]) -> dict[str, object]:
+      import os
+      import platform
+
+      summary = "\n".join(
+          [
+              f"- 操作系统: {platform.system()} {platform.release()}",
+              f"- Python 版本: {platform.python_version()}",
+              f"- 当前目录: {os.getcwd()}",
+          ]
+      )
+      return {"content": [{"type": "text", "text": summary}]}
+
+
+  async def run_all_examples() -> None:
+      # 1) 基础问答
+      async for msg in query(prompt="你好，做个自我介绍。"):
+          if isinstance(msg, AssistantMessage):
+              for block in msg.content:
+                  if isinstance(block, TextBlock):
+                      print(block.text)
+
+      # 2) 定制参数 + 流式消费
+      options = QwenAgentOptions(system_prompt="你是一名资深助手，善于步骤化回答。")
+      async for msg in query("解释一下多进程和多线程的差异", options=options):
+          ...
+
+      # 3) 注册自定义工具
+      server = create_sdk_mcp_server(name="my-tools", version="1.0.0", tools=[get_system_info])
+      async with QwenSDKClient(
+          options=QwenAgentOptions(
+              mcp_servers={"tools": server},
+              allowed_tools=["mcp__tools__get_system_info"],
+          )
+      ) as client:
+          await client.query("请获取当前运行环境")
+          async for msg in client.receive_response():
+              ...
+
+
+  anyio.run(run_all_examples)
+  ```
 
 ## 开放事项与后续计划
 
