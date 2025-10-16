@@ -224,6 +224,13 @@
   - `continuation`: Boolean equivalent to `submitQuery(...,{isContinuation:true})`; if omitted, the CLI infers continuation based on `origin` and command context.
   - `tool_request`: Mirrors `ToolCallRequestInfo` to support concurrent tools and sub-agents.
 
+### Session Control
+
+- Third parties may invoke the CLI’s “create session” command or reuse an existing ID; when `session_id` is missing or set to `"_new"`, the CLI returns the actual ID in the first `chat.completion`.
+- `prompt_id` and `tool_call_id` together isolate concurrent flows; reuse them for tool continuations. The default format is `<session_id>########<turn>`, but any unique identifier is acceptable.
+- Sending `input.origin="system"` with parts such as `{"type":"instruction","text":"/clear"}` triggers slash commands exactly as in the TUI.
+- When `origin="tool_response"`, `tool_call_id` is mandatory so the CLI can attach results to the correct turn before proceeding.
+
 ### Commands and `@` References
 
 | Mode | Trigger Method | Behavior |
