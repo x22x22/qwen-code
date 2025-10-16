@@ -11,6 +11,7 @@
 
 - **核心组件**: 文档聚焦 Qwen-Code Agent SDK, 在宿主进程内封装会话路由、控制协议与 Worker 池治理, 面向多语言场景提供统一接入。
 - **核心职能**: 会话调度与路由；CLI 子进程生命周期与资源治理；控制协议 Hook 与权限判定；轻量日志输出与可观测接入；观察性数据采集（日志、指标、追踪）。
+- **核心功能**: 支持同步/异步任务执行、流式输出、会话管理、错误处理与重试、In-Process MCP 工具桥接以及独立配置注入。
 - 面向多语言 SDK，统一封装 CLI 子进程生命周期与 JSONL 协议。
 - 提供会话调度、权限治理、Hook/MCP 回调、日志与指标采集的一致接口。
 - 以与 Claude Agent SDK 对齐的协议规范，降低多端协作与生态集成成本。
@@ -89,8 +90,10 @@ flowchart LR
 ```
 
 - Agent SDK 与 CLI 共享 STDIN/STDOUT 双向 JSONL 通道，统一传输 `chat.completion*`、`result/*`、`control_request` 等事件。
+- 双向通信链路：CLI 逐行输出 `chat.completion`/`result/*`/`control_request` 至 stdout，SDK 解析后按需通过 stdin 回写 `request`/`control_response`，当出现 `control_request{subtype:"mcp_message"}` 时，ControlPlane 会将 JSON-RPC 转发至本地 MCP Server 并回传 `mcp_response`。
 - qwen-code CLI 已接入 OpenTelemetry，上报模型调用、工具执行、CLI 内部事件；Agent SDK 需独立接入，并通过 Trace/Span ID 串联端到端链路，构建统一排障视角。
 - 控制协议的事件语义与 CLI 输出格式规范保持一致，详见配套的 `stream-json` RFC。
+- 事件分类提示：关于 `result/*`、`request`、`control_request` 等事件的详细语义，请参阅《qwen-code-cli-output-format-stream-json-rfc_cn.md》的“事件机制分类”章节。
 
 ## 核心能力映射
 
@@ -150,6 +153,7 @@ flowchart LR
   - `createAgentManager(options)`：提供 `createSession`、`run`、`forkSession`。
   - `session.stream(task)`：返回 `AsyncIterable<AgentMessage>`，可 `for await` 消费。
   - `onPermissionRequest`：以 `allow/deny/ask` + 规则返回权限决策。
+  - `settingSources`：默认关闭，需要显式声明 `["user","project","local"]` 等条目才会加载对应设置文件。
   - `defineTools`：注册 MCP 工具，与 CLI 会话共享上下文。
   - `agents` 选项：支持内联多代理拓扑，结合 `forkSession` 构建子代理。
 - **实现要点**：
