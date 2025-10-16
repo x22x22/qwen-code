@@ -89,6 +89,8 @@
 
 ## 事件载荷与注解
 
+`packages/cli/src/nonInteractiveCli.ts` 与 `packages/cli/src/ui/utils/ConsolePatcher.ts` 共同决定了文本模式输出的来源：模型内容通过 `GeminiEventType.Content` 写入 `stdout`，工具执行状态与日志由 `ConsolePatcher` 打印至 `stderr`，工具结果结构体 (`ToolResultDisplay` 等) 则在 `packages/cli/src/ui/hooks/useReactToolScheduler.ts` 中驱动 UI 渲染。为保证 `stream-json` / `stream-chunk-json` 能完整覆盖这些语义，整理版沿用原 RFC 在 OpenAI `annotations` 字段上的扩展约定：
+
 | 类型 | 主要字段 | 用途 |
 | --- | --- | --- |
 | `chat.completion.chunk` 注解 | `annotations`、`spans` | 复刻终端风格、ANSI 控制、来源标记 |
@@ -152,8 +154,10 @@
 ```
 
 - `status` 取自 `ToolCallStatus`（`Pending`、`Executing`、`Success`、`Error`、`Canceled`、`Confirming`）。
+- `tool_call_id` 复用 OpenAI schema 字段名，结合 `session_id` 可唯一定位调用；在测试或非会话模式下也可单独使用。
 - `result_display` 支持 `string`、`file_diff`、`todo_list`、`plan_summary`、`task_execution` 等 union。
-- `confirmation` 描述待确认的 diff/命令/MCP 信息；`pending=true` 表示尚未执行。
+- `confirmation` 序列化 `ToolCallConfirmationDetails` 中的 diff、命令、计划等信息，便于第三方弹窗确认。
+- `pending=true` 表示调用仍在验证/排队阶段，尚未交给执行器，与 `ToolCallStatus.Pending` 等价。
 - `timestamp` 用于排序，与 `useReactToolScheduler` 记录一致。
 
 ### 思考与会话事件
@@ -212,7 +216,7 @@
 - `session_id`：会话主键（`config.getSessionId()`），传入 `"_new"` 可创建新会话。
 - `prompt_id`：区分回合；默认格式 `<session_id>########<turn>`，须在工具续写时复用。
 - `input.origin`：`user` / `tool_response` / `system`，决定会话续写逻辑。
-- `input.parts`：兼容 `@google/genai` PartListUnion，允许 `text`、`function_response`、`file_data` 等。
+- `input.parts`：兼容 `@google/genai` PartListUnion，允许 `text`、`function_response`、`file_data` 等；当 `origin="user"` 时，CLI 会将所有 `text` part 顺序拼接并复用 `prepareQueryForGemini` 的语义处理。
 - `options`：单次请求参数覆写（模型、采样、工具白名单）。
 - 扩展字段：
   - `tool_call_id`：`origin=tool_response` 时必填，用于匹配输出事件。
@@ -233,6 +237,9 @@
 | 隐式解析 | `origin="user"` + 文本以 `/`/`?`/`@` 开头 | CLI 自动走 slash/at 流程，调用 `handleAtCommand` 等逻辑 |
 | 显式声明 | `input.command` 描述命令 | 推荐给第三方，避免字符串解析歧义 |
 
+- `command.kind`: `slash` / `at`，与 TUI 命令分类一致。
+- `command.path`: 对于 slash 命令是层级数组（等价 `commandPath`），`at` 模式可省略。
+- `command.args`: 剩余参数字符串，CLI 会按原逻辑解析。
 - `input.command.references` 支持在 `kind="at"` 时直接提供已解析的引用列表，例如 `{ "original":"@src/main.ts","resolved":"src/main.ts" }`，CLI 会基于显式路径读取文件。
 - 若未传入 `references`，CLI 将回退到 `handleAtCommand` 与 `useAtCompletion` 的自动解析逻辑，以保持与 TUI 相同的容错能力。
 
@@ -479,10 +486,19 @@
 | 请求事件 | SDK/第三方 → STDIN | `command_hint_request`、`heartbeat_request`、`control/cancel` | CLI 返回对应 `result/*` | 触发即时行为或控制 |
 | 控制通道 | CLI ↔ STDIN/STDOUT | `control_request` / `control_response` | 必须匹配 `request_id` | 权限审批、Hook 回调、MCP 调用 |
 
-- `result/*` 属于 CLI → STDOUT 的单向通告，承载命令输出、心跳反馈、会话事件等信息，无需回执。
-- `*request` 表示第三方向 CLI 发起的即时指令（提示、心跳、取消等），CLI 必须返回对应的 `result/*` 作为响应。
-- `control_request`/`control_response` 构成需要回执的控制通道，用于工具授权、Hook 回调、MCP 调用等场景，必须匹配 `request_id` 并在合理超时内返回。
-- 所有事件都通过统一的 JSON Lines 协议传输，集成方应按 `type`/`subtype` 路由；控制通道事件不写入会话历史，与 TUI 行为保持一致，并需实现超时与错误回退策略。
+按语义还可归纳三类事件机制：
+
+1. **结果事件 (`result/*`)**  
+   - CLI → STDOUT 的单向通告，承载命令输出、提示建议、心跳反馈、会话状态更新等信息。  
+   - 不要求第三方回执，可直接用于 UI 展示与日志记录。
+2. **请求事件 (`*request`)**  
+   - 第三方 → STDIN 的即时指令，例如 `command_hint_request`、`heartbeat_request`、`control/cancel`。  
+   - CLI 会以对应的 `result/*` 响应，确保提示、保活与取消流程与 TUI 一致。
+3. **控制通道事件 (`control_request` / `control_response`)**  
+   - CLI 输出 `control_request`、第三方写回 `control_response`，用于工具授权、Hook 回调、MCP 调用等需要回执的场景。  
+   - 每条请求含唯一 `request_id`，必须在合理超时内返回结果，该类事件不写入会话历史而走控制层旁路。
+
+- 所有事件通过统一 JSON Lines 协议传输，集成方应按 `type`/`subtype` 路由；对控制通道需实现超时与错误回退策略，以避免 CLI 阻塞并保持与 TUI 行为一致。
 
 ## 控制请求与响应
 
