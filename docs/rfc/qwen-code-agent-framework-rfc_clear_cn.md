@@ -87,7 +87,7 @@ flowchart LR
 ```
 
 - Agent SDK 与 CLI 共享 STDIN/STDOUT 双向 JSONL 通道，统一传输 `chat.completion*`、`result/*`、`control_request` 等事件。
-- CLI 与 SDK 分别接入 OpenTelemetry，通过 Trace/Span ID 串联端到端链路，构建统一排障视角。
+- qwen-code CLI 已接入 OpenTelemetry，上报模型调用、工具执行、CLI 内部事件；Agent SDK 需独立接入，并通过 Trace/Span ID 串联端到端链路，构建统一排障视角。
 - 控制协议的事件语义与 CLI 输出格式规范保持一致，详见配套的 `stream-json` RFC。
 
 ## 核心能力映射
@@ -109,8 +109,8 @@ flowchart LR
 | --- | --- | --- | --- | --- | --- |
 | Python | Python 3.10+ | `pyproject + hatchling`，命名空间 `qwen_agent_sdk`，发布 `py.typed` | `anyio>=4`、`typing_extensions`、`mcp>=0.1`、`pydantic>=2` | `query()` 快速入口、`QwenSDKClient`、工具注册、权限/Hook 回调、日志与 OTel | 首发实现 |
 | TypeScript | Node.js 18+ | 包 `@qwen-agent/sdk`，ESM 默认导出，`tsup` 产物 | `@qwen-code/cli`、`zx/execa`、`eventemitter3` | `createAgentManager`、流式迭代、权限回调、MCP 工具、settingSources 控制 | 首发实现 |
-| Go | Go 1.22+ 预期 | 待定 | 待定 | 复用控制协议，暴露通用 API | TODO |
-| Java | Java 17+ 预期 | 待定 | 待定 | 面向企业场景的 SDK | TODO |
+| Go | 待定 | 待定 | 待定 | 复用控制协议，暴露通用 API | TODO |
+| Java | 待定 | 待定 | 待定 | 面向企业场景的 SDK | TODO |
 
 ### Python SDK 细节
 
@@ -194,6 +194,24 @@ sequenceDiagram
 - 初始化阶段通过 `control_request{subtype:"initialize"}` 同步 Hook 配置与能力声明。
 - 回调异常时，SDK 需记录日志并返回 `control_response{subtype:"error"}`，CLI 遵循安全回退策略。
 
+## 通信模式与 MCP 能力
+
+| 模块 | 形态 | 关键说明 |
+| --- | --- | --- |
+| IPC 模式 | STDIN/STDOUT JSON Lines | SDK 启动本地 `qwen` 子进程，以 JSON Lines 进行通信；协议细节对齐《qwen-code-cli-output-format-stream-json-rfc_cn.md》，保持 `/`、`@`、`?` 指令的即时回执。 |
+| In-Process MCP Server | SDK 内嵌 MCP Server | 依赖 `mcp>=0.1` 在宿主进程创建 MCP Server，透传 `@tool`/`defineTools` 定义的函数，无需额外子进程或网络服务。 |
+
+- **IPC 实现要点**：
+  - `SubprocessCLITransport`（或等价实现）通过同一 STDIN/STDOUT 管道处理正向/反向消息，无需额外套接字。
+  - CLI 输出 `chat.completion`/`chat.completion.chunk` 时需在首条消息的 `metadata` 携带 `protocol_version`、`input_format`、`output_format`、`capabilities`。
+  - 事件语义覆盖 `result/heartbeat`、`result/cancel`、`x-qwen-session-event`、`control_request/control_response`，并提供 OpenAI 风格错误对象。
+- **MCP 事件链路**：
+  - CLI 通过 `control_request{subtype:"mcp_message"}` 将 JSON-RPC 请求写入 stdout，SDK 转发给本地 MCP Server 执行 `tools/list`、`tools/call`。
+  - 执行结果封装为 `control_response` 写回 stdin，形成闭环。
+- **授权分工与优势**：
+  - CLI 触发 `control_request{subtype:"can_use_tool"}` 由 SDK 决策授权，MCP 调用链路与权限判定解耦。
+  - 工具执行下沉到 SDK 进程内，降低延迟；Hook 能力可沿同一通路后续接入，与 Claude Agent SDK 实践保持一致。
+
 ## Worker 池与复用
 
 | 维度 | 设计要点 | 实施状态 |
@@ -230,11 +248,16 @@ worker_pool:
 | `user/workspace` | JSON 对象或文件/目录路径 | SDK 在临时目录生成 `settings.json` 并挂载至 CLI |
 | `overrides` | 键值覆盖，如 `model.name`、`tools.allowed` | 直接写入临时配置文件 |
 
-- Worker 池启动 CLI 前写入隔离配置目录，并通过新环境变量或 `--settings-profile` 注入。
-- Worker 池销毁时需清理临时目录，确保配置不泄漏。
-- 日志需打印 profile 摘要（不含敏感信息），便于排查配置错配。
-- CLI 侧需补充对应环境变量解析与默认回退逻辑。
-- 当前 CLI 尚未支持单子进程独立配置，需要后续 RFC/PR 落地。
+- **生态复用**：沿用 CLI 多层设置体系 (`SettingScope.System/SystemDefaults/User/Workspace`)，不同 `QwenClient` 相互隔离，未提供 profile 时走 CLI 默认加载顺序。
+- **实现步骤**：
+  1. 在 `QwenClientOptions`/`QwenAgentOptions` 新增 `settings_profile` 字段，Python/TypeScript SDK 均需支持。
+  2. Worker 池启动 CLI 前，将 profile 写入隔离目录，并设置 `--setting-sources`/`--settings` 或相关参数。
+  3. 写入 `QWEN_CODE_USER_SETTINGS_PATH`、`QWEN_CODE_WORKSPACE_SETTINGS_PATH` 等环境变量，以指向生成的临时配置文件。
+  4. Worker 池销毁时清理临时目录，避免配置泄漏。
+- **日志与排障**：日志中打印 profile 摘要（脱敏），便于排查配置错配。
+- **安全考量**：配置仅由宿主应用注入，不做共享路径回退，防止跨租户污染，需提醒妥善管理敏感 Token/路径。
+- **兼容性**：CLI 需补齐对新环境变量的解析，未识别的变量应回退默认行为（忽略）。
+- **现状提醒**：当前 CLI 尚未支持单子进程独立配置，需要后续 RFC/PR 推进 `--settings-profile` 及相关环境变量能力。
 
 ## Agent SDK 调度层能力
 
