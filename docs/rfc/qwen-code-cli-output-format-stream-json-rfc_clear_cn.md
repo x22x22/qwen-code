@@ -14,6 +14,28 @@
 - 协议保持与 TUI 相同的行为，补齐 JSON Lines 输出、对称输入以及控制通道，回应社区关于 `--input-format/--output-format json/stream-json` 的诉求。
 - 文档聚焦 CLI 侧能力，不涵盖 SDK 内部设计。
 
+## 背景与场景
+
+### Issue 795 概述
+- 社区在 issue [#795](https://github.com/QwenLM/qwen-code/issues/795) 中请求为 CLI 增加 `--input-format/--output-format json/stream-json`，希望参考 Claude Code 的实现，提供可被程序稳定消费的结构化 IO。
+- RFC 旨在扩展 CLI，使其在保持 TUI 兼容的同时，为 SDK 与第三方后端提供对称的 JSON 协议与消息语义。
+
+### 集成方场景
+- **任务级串行处理**：SDK 逐条发送 prompt，同时在多个阶段接收 CLI 返回的数据并二次处理后再展示给最终用户。
+- **任务级流式直传**：SDK 逐条发送 prompt，CLI 的流式响应被直接转发给用户，保持实时可见性。
+- **指令提示与快捷符号**：第三方输入框中的 `/`、`@`、`?` 等触发行为需要与 TUI 完全一致，确保不同前端体验统一。
+- **前端终端模拟**：利用 xterm.js 等库复刻终端交互，输入区域与终端输出分离，但仍需消费 CLI 的完整终端语义。
+
+### 集成方式
+- 第三方程序依赖后续提供的多语言 `qwen-code-agent-sdk`。
+- SDK 通过子进程方式启动 `qwen code`，并以 STDIN/STDOUT 建立双向 IPC。
+- SDK 负责读取 CLI 的结构化输出，并完成错误处理与状态管理。
+- 第三方应用消费 SDK 的结果，在自身 UI 或后端逻辑中呈现。
+
+### 现状痛点
+- CLI 仅面向人工交互的纯文本 STDOUT，输出语义不稳定，难以被自动化消费。
+- 缺乏对称的结构化输入协议，无法驱动高级自动化与工具调度流程。
+
 ## 目标与范围
 
 | 类型 | 内容 |
@@ -43,6 +65,12 @@
 | `text` | 人机交互兼容模式 | 输出原有 TUI 文本 | 默认模式，后续标记为手动使用 |
 | `stream-json` | 消息级 JSONL | 每行 `chat.completion`，含初始化回执、助手回复、工具调用、收尾摘要 | 对齐 OpenAI `/chat/completions` |
 | `stream-chunk-json` | 增量 chunk JSONL | 每行 `chat.completion.chunk`，`choices[].delta` 承载 token/块增量 | 对齐 OpenAI 流式响应，覆盖完整会话 ID |
+
+### 消费策略
+
+- **消息级 JSONL（`stream-json`）**：适合第三方后端或 CLI 包装器按阶段消费结果，与现有 JSONL 管线兼容，是默认结构化模式。
+- **增量 chunk（`stream-chunk-json`）**：面向 IDE/UI“边生成边展示”的实时场景，SDK 需监听 `chat.completion.chunk` 并在收到最终 `finish_reason` 时收尾。
+- **终端语义一致性**：无论 CLI 在文本模式还是结构化模式，`stream-json` 与 `stream-chunk-json` 都必须完整覆盖 TUI 向标准输出写入的全部语义（文本、ANSI/Vt100 控制、工具提示、退出码等），并通过 `choices[].message.content` / `choices[].delta.content` 与 `choices[].delta.annotations`（如 `{"type":"x-qwen-ansi","value":"\u001b[32m"}`）编码，便于 xterm.js 等终端完全还原效果。
 
 ### `stream-json` 示例
 
@@ -191,6 +219,13 @@
   - `continuation`: 布尔值，等价 `submitQuery(...,{isContinuation:true})`。
   - `tool_request`: 镜像 `ToolCallRequestInfo`，支撑并发工具与子代理。
 
+### 会话控制
+
+- 第三方可调用 CLI 提供的“创建会话”命令或复用已有 ID；当 `session_id` 缺失或指定为 `"_new"` 时，CLI 会在首个 `chat.completion` 中返回实际 ID。
+- `prompt_id` 与 `tool_call_id` 共同确保并发流程隔离，需在工具回传与续写时保持一致；默认格式 `<session_id>########<turn>`，也可自定义但必须唯一。
+- 使用 `input.origin="system"` 并在 `parts` 中发送 `{"type":"instruction","text":"/clear"}` 等指令，可触发与 TUI 相同的 slash 命令逻辑。
+- 当 `origin="tool_response"` 时，必须提供 `tool_call_id` 以关联输出事件；CLI 会将结果写入对应回合并继续调度。
+
 ### 命令与 `@` 引用
 
 | 模式 | 触发方式 | 行为 |
@@ -198,7 +233,10 @@
 | 隐式解析 | `origin="user"` + 文本以 `/`/`?`/`@` 开头 | CLI 自动走 slash/at 流程，调用 `handleAtCommand` 等逻辑 |
 | 显式声明 | `input.command` 描述命令 | 推荐给第三方，避免字符串解析歧义 |
 
-显式命令示例：
+- `input.command.references` 支持在 `kind="at"` 时直接提供已解析的引用列表，例如 `{ "original":"@src/main.ts","resolved":"src/main.ts" }`，CLI 会基于显式路径读取文件。
+- 若未传入 `references`，CLI 将回退到 `handleAtCommand` 与 `useAtCompletion` 的自动解析逻辑，以保持与 TUI 相同的容错能力。
+
+#### 显式 slash 命令示例
 
 ```jsonc
 {
@@ -216,7 +254,46 @@
 }
 ```
 
-CLI 输出对应 `result/command`：
+#### 显式 `@` 引用示例
+
+```jsonc
+{
+  "session_id": "session-123",
+  "input": {
+    "origin": "user",
+    "parts": [{"type": "text", "text": "请审阅 @src/main.py"}],
+    "command": {
+      "kind": "at",
+      "references": [
+        {"original": "@src/main.py", "resolved": "src/main.py"}
+      ]
+    }
+  }
+}
+```
+
+### SDK 侧命令协作
+
+| `command.result.type` | 说明 | SDK 建议动作 |
+| --- | --- | --- |
+| `handled` | 命令已在 CLI 内部完成 | 无需额外处理 |
+| `message` | 返回信息或错误 | 直接在 UI 显示通知 |
+| `dialog` (`auth`/`theme`/`editor`/`privacy`/`settings`/`model`/`subagent_create`/`subagent_list`/`help`) | 需要弹窗或页面跳转 | 在第三方界面呈现对应对话框 |
+| `tool` | 触发工具调用 | 将 `tool_request` 或命令参数转为工具请求并继续监听结果 |
+| `submit_prompt` | 立即发送 PartListUnion 至模型 | 将 `content` 作为下一条输入并设置 `continuation=true` |
+| `load_history` | 重置或加载指定会话历史 | 触发历史刷新或重新加载 |
+| `quit` / `quit_confirmation` | 退出流程或等待用户确认 | 控制宿主应用生命周期并回传确认结果 |
+| `confirm_shell_commands` | 待确认 shell 命令 | 弹窗确认，批准后携带 `approvedCommands`/`confirmationOutcome` 再次调用 |
+| `confirm_action` | 需要确认提示 | 提供确认按钮并返回结构化结果 |
+
+- SDK 应暴露统一命令执行 API，将用户输入映射为上述 `command` 结构，并根据 `result` 类型驱动本地 UI 或后续请求。
+- CLI 会使用显式 `references` 读取文件；若缺失则自动回退到 `handleAtCommand` 的解析流程，保证行为与 TUI 完全一致。
+- 命令触发后续模型调用时，CLI 会继续输出 `assistant`、`tool_call` 与 `result/*` 事件，顺序保持与 TUI 相同，使第三方可以通过纯文本输入与 JSON 输出复现完整交互。
+
+### STDIN 命令回执
+
+- 当 `--input-format=stream-json` 时，CLI 必须对 `/`、`?`、`@` 等命令保持即时反馈，解析逻辑沿用 `useSlashCommandProcessor` 与 `handleAtCommand`。
+- 命令解析完成后，CLI 将向 STDOUT 写出结构化响应：
 
 ```jsonc
 {
@@ -236,8 +313,8 @@ CLI 输出对应 `result/command`：
 }
 ```
 
-- `command.result.type` 支持 `message`、`dialog`、`tool`、`submit_prompt` 等枚举，方便 UI 渲染。
-- 若命令触发模型调用，后续输出会继续附带 `assistant`、`tool_call`、`result/*`，顺序与 TUI 一致。
+- `result` 字段遵循上表所列 `command.result.type` 枚举，便于 SDK 在收到 `stream-json`/`stream-chunk-json` 时立即驱动 UI。
+- 若命令触发进一步的模型交互（如 `/submit`、`@file` 展开），CLI 会在同一会话中继续串联对应事件并保持字段一致。
 
 ## 实时提示、心跳与中断
 
@@ -286,8 +363,86 @@ CLI 输出对应 `result/command`：
 }
 ```
 
-- `suggestions` 结构复用 TUI `Suggestion`，`status="loading"` 表示 CLI 正在准备数据，`error` 时附带 message。
-- 触发字符变化时可不断请求；取消时发送 `command_hint_cancel`。
+### 提示请求示例（`@src/co`）
+
+```jsonc
+{
+  "type": "command_hint_request",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "at",
+  "text": "@src/co",
+  "cursor": 7,
+  "context": {
+    "cwd": "/workspace/demo",
+    "selected_text": ""
+  }
+}
+```
+
+### 提示响应示例（`@src/co`）
+
+```jsonc
+{
+  "type": "result/command_hint",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "at",
+  "status": "ok",
+  "suggestions": [
+    {"label": "src/components/", "value": "src/components/"},
+    {"label": "src/components/Button.tsx", "value": "src/components/Button.tsx"},
+    {"label": "src/components/Button with spaces.tsx", "value": "src/components/Button\\ with\\ spaces.tsx"}
+  ],
+  "metadata": {
+    "is_perfect_match": false
+  }
+}
+```
+
+### 提示请求示例（`/?`）
+
+```jsonc
+{
+  "type": "command_hint_request",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "slash",
+  "text": "/?",
+  "cursor": 2,
+  "context": {
+    "cwd": "/workspace/demo",
+    "selected_text": ""
+  }
+}
+```
+
+### 提示响应示例（`/?`）
+
+```jsonc
+{
+  "type": "result/command_hint",
+  "session_id": "session-123",
+  "prompt_id": "session-123########preview",
+  "trigger": "slash",
+  "status": "ok",
+  "suggestions": [
+    {
+      "label": "help",
+      "value": "help",
+      "description": "for help on Qwen Code",
+      "matchedIndex": 0
+    }
+  ],
+  "metadata": {
+    "is_perfect_match": true
+  }
+}
+```
+
+- `suggestions` 结构复用 TUI `Suggestion`，`status="loading"` 表示 CLI 正在准备数据，`error` 时附带 `message`。
+- CLI 内部复用 `useSlashCompletion`、`useAtCompletion` 生成提示；这些请求不会写入会话历史，`prompt_id` 可使用 `_preview` 后缀并在响应中原样返回。
+- 支持连续触发：输入或光标变化时可重复发送 `command_hint_request`，CLI 负责节流并返回最新结果；取消提示时发送 `{"type":"command_hint_cancel",...}`。
 
 ### 心跳请求与响应
 
@@ -297,7 +452,8 @@ CLI 输出对应 `result/command`：
 ```
 
 - 第三方可配置超时（如 10 秒）判断 CLI 是否挂起并执行重启。
-- 规划允许 SDK 自定义心跳频率。
+- CLI 会按相同结构回复 `result/heartbeat`，也可在后台主动推送保活事件。
+- `@third-party/anthropics/claude-agent-sdk-python` 目前缺少心跳实现；P1.1 落地时需定义默认间隔、超时策略，并允许 SDK 自定义心跳频率。
 
 ### 中断示例
 
@@ -312,6 +468,8 @@ CLI 输出对应 `result/command`：
 
 - CLI 必须调用 `cancelOngoingRequest`，中止 `AbortController`，补齐历史项并发出 `result/cancel`。
 - 若当前无可取消请求，CLI 应返回 `{"type":"result/cancel","status":"noop"}` 并说明原因。
+- 当底层流返回 `GeminiEventType.UserCancelled` 事件时，CLI 需追加 `{"type":"x-qwen-session-event","event":"USER_CANCELLED","message":"User cancelled the request."}` 提示会话被中断。
+- 双击 ESC 清空输入属于客户端自身逻辑，结构化模式的集成方可在本地复用该交互，无需额外向 CLI 发送消息。
 
 ## 事件分类与通道
 
@@ -321,8 +479,10 @@ CLI 输出对应 `result/command`：
 | 请求事件 | SDK/第三方 → STDIN | `command_hint_request`、`heartbeat_request`、`control/cancel` | CLI 返回对应 `result/*` | 触发即时行为或控制 |
 | 控制通道 | CLI ↔ STDIN/STDOUT | `control_request` / `control_response` | 必须匹配 `request_id` | 权限审批、Hook 回调、MCP 调用 |
 
-- 事件通过统一 JSON Lines 传输，SDK 应基于 `type`/`subtype` 做路由。
-- 控制通道不写入会话历史，与 TUI 行为一致，需实现超时与错误回退。
+- `result/*` 属于 CLI → STDOUT 的单向通告，承载命令输出、心跳反馈、会话事件等信息，无需回执。
+- `*request` 表示第三方向 CLI 发起的即时指令（提示、心跳、取消等），CLI 必须返回对应的 `result/*` 作为响应。
+- `control_request`/`control_response` 构成需要回执的控制通道，用于工具授权、Hook 回调、MCP 调用等场景，必须匹配 `request_id` 并在合理超时内返回。
+- 所有事件都通过统一的 JSON Lines 协议传输，集成方应按 `type`/`subtype` 路由；控制通道事件不写入会话历史，与 TUI 行为保持一致，并需实现超时与错误回退策略。
 
 ## 控制请求与响应
 
@@ -368,9 +528,13 @@ CLI 输出对应 `result/command`：
 }
 ```
 
+- 代码现状：当前 CLI 仅支持单向输出，TUI 内的确认/对话框逻辑在进程内处理，缺少 Claude Code 样式的 `control_request`/`control_response` hook。
+- 设计需求：当 CLI 需要外部确认或回执时输出 `control_request`，第三方在 STDIN 写入匹配的 `control_response` 完成授权或补充信息，覆盖工具审批、Hook 回调、MCP JSON-RPC 等场景。
+- 场景覆盖：`/confirm_shell_commands`、`confirm_action`、`quit_confirmation`、工具权限审批、子代理调度，以及未来的弹窗、表单、身份验证流程。
+- 回退策略：若控制通道未启用，CLI 应显式拒绝危险操作或提示“结构化模式下不可用”，并通过 `result/command` 返回错误，避免静默失败。
+- 后续工作：1）在 RFC 中追加 `control_request`/`control_response` JSON Schema；2）在 CLI 内抽象统一控制消息分发层，让 TUI 与 CLI 复用逻辑；3）在 SDK 中实现监听与响应，向上层 UI 暴露钩子。
 - 若回调异常，SDK 需返回 `{"subtype":"error","error":{"message":"...", "retryable":false}}`，CLI 按协议走安全回退（自动拒绝或提示失败）。
 - MCP 集成：`subtype:"mcp_message"` 承载 JSON-RPC (`tools/list`、`tools/call` 等)，SDK 将结果封装为 `control_response` 内的 `mcp_response`。
-- 后续需要在 CLI 内抽象统一分发层，使 TUI 与结构化模式共享逻辑。
 
 ## 版本协商与错误语义
 
