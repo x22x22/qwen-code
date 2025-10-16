@@ -9,6 +9,9 @@
 | Architecture Scope | Qwen-Code Agent SDK and qwen-code CLI subprocess orchestration, control protocol, observability, and configuration system |
 | Key Objectives | Provide third-party applications with unified IPC communication, worker pool governance, permission control, and tool bridging capabilities |
 
+- **Core Component**: Focuses on the Qwen-Code Agent SDK, which runs inside the host process to wrap session routing, control protocol handling, and worker pool governance for multi-language integrations.
+- **Core Responsibilities**: Session scheduling and routing; CLI subprocess lifecycle and resource governance; control protocol hooks and permission adjudication; lightweight logging with observability integration; telemetry collection (logs, metrics, traces).
+- **Core Functions**: Supports synchronous/asynchronous task execution, streaming output, session management, error handling and retries, in-process MCP tool bridging, and isolated configuration injection.
 - Targets multi-language SDKs with a unified wrapper for the CLI subprocess lifecycle and JSONL protocol.
 - Provides consistent interfaces for session scheduling, permission governance, Hook/MCP callbacks, logging, and metrics collection.
 - Aligns protocol specifications with the Claude Agent SDK to lower collaboration and ecosystem integration costs across platforms.
@@ -87,8 +90,9 @@ flowchart LR
 ```
 
 - The Agent SDK and CLI share a bidirectional STDIN/STDOUT JSONL channel that transports events such as `chat.completion*`, `result/*`, and `control_request`.
-- The CLI and SDK each integrate with OpenTelemetry, linking end-to-end traces through Trace/Span IDs to provide a unified troubleshooting view.
-- Control protocol event semantics remain consistent with the CLI output format specification; see the companion `stream-json` RFC.
+- Event flow: the CLI writes those events line-by-line to stdout; the SDK parses them and, when necessary, responds via stdin with `request` or `control_response`. When the CLI emits `control_request{subtype:"mcp_message"}`, the ControlPlane forwards JSON-RPC to the in-process MCP server and returns the resulting `mcp_response`.
+- The qwen-code CLI already integrates with OpenTelemetry to report model calls, tool executions, and internal events; the Agent SDK must add its own instrumentation and propagate Trace/Span IDs to align end-to-end troubleshooting.
+- Event classification note: detailed semantics for `result/*`, `request`, `control_request`, and related events reside in the `qwen-code-cli-output-format-stream-json-rfc_en.md` specification.
 
 ## Capability Mapping
 
@@ -123,11 +127,12 @@ flowchart LR
 - **Implementation Highlights**:
   - `StdIOSubprocessTransport` launches the `qwen` CLI, writes JSONL, and reads streaming chunks.
   - `_handle_control_request()` invokes callbacks for `can_use_tool`, `hook_callback`, `mcp_message`, and other `subtype` values, then writes `control_response`.
+  - **Hook Pipeline**: Supports events such as `PreToolUse`, `PostToolUse`, and `UserPromptSubmit`, allowing JSON directives to adjust the conversation flow in line with Anthropic's hook schema.
   - `Query.initialize()` sends `control_request{subtype:"initialize"}` on first use to sync hook configuration and capability declarations.
   - Provides unified wrappers for `PermissionResult`, hook JSON, and MCP JSON-RPC payloads.
 - **Logging and Observability**:
-  - Outputs structured JSON logs by default and supports injecting `structlog`.
-  - `options.stderr` can capture raw CLI error streams.
+  - Outputs structured JSON logs by default, supports injecting `structlog`, and follows a lightweight logging policy that mirrors Python's `logging` style.
+  - `options.stderr` / `debug_stderr` can capture raw CLI error streams for faster troubleshooting.
   - Plans to include built-in OpenTelemetry Tracer/Meter to record session latency, transport errors, and worker utilization.
 - **Resilience**:
   - Automatically retries and forks sessions when the CLI crashes, preserving the latest successful result for resumable execution.
@@ -143,13 +148,15 @@ flowchart LR
   - `createAgentManager(options)`: Provides `createSession`, `run`, and `forkSession`.
   - `session.stream(task)`: Returns an `AsyncIterable<AgentMessage>` for `for await` consumption.
   - `onPermissionRequest`: Returns permission decisions with `allow/deny/ask` plus optional policies.
+  - `settingSources`: Disabled by default; only loads specified entries (e.g., `["user","project","local"]`) when explicitly declared.
   - `defineTools`: Registers MCP tools and shares context with the CLI session.
   - `agents` option: Supports inline multi-agent topologies and uses `forkSession` to build sub-agents.
 - **Implementation Highlights**:
   - Uses `execa` to launch the CLI and parses stdout into `AgentStreamChunk`.
+  - `ProcessTransport` decodes stdout line-by-line (`JSON.parse`) and pushes `control_request`, `result/*`, and `chat.completion*` events via an `EventEmitter`, while all `control_response` payloads share the subprocess stdin.
   - Maintains a `result/heartbeat` timer and automatically restarts workers on timeout.
   - `pendingControl` map uses `request_id` to route `control_request`.
-  - Callback promises generate standardized `control_response` payloads; unregistered callbacks follow default policies.
+  - `onPermissionRequest` and `onHookEvent` callbacks are wrapped as promises that emit standardized `control_response` payloads; when no callback is registered the SDK falls back to the default policy to avoid stalling the CLI.
   - `defineTools()` composes TypeScript functions into an in-process MCP server that forwards JSON-RPC.
   - During initialization, waits for the CLI's first `chat.completion` handshake and sends hook/tool capabilities via `control_request{subtype:"initialize"}`.
   - Records verbose logs for exceptional scenarios and returns `control_response{subtype:"error"}` as needed.
@@ -194,6 +201,23 @@ sequenceDiagram
 - During initialization the CLI sends `control_request{subtype:"initialize"}` to synchronize hook configuration and capability declarations.
 - When callbacks fail, the SDK must log the error and return `control_response{subtype:"error"}`, while the CLI follows its safety fallback policy.
 
+## Communication Mode and MCP Capabilities
+
+| Module | Form | Key Notes |
+| --- | --- | --- |
+| IPC Mode | STDIN/STDOUT JSON Lines | SDK launches the local `qwen` subprocess and exchanges JSON Lines; protocol details mirror the `qwen-code-cli-output-format-stream-json-rfc_en.md`, preserving instant responses for `/`, `@`, and `?` commands. |
+| In-Process MCP Server | SDK-embedded MCP server | Relies on `mcp>=0.1` to register functions declared via `@tool` / `defineTools`; no extra subprocess or network service is required. |
+
+- **IPC Implementation**:
+  - `SubprocessCLITransport` (or its equivalents) handles both directions over the same STDIN/STDOUT pipe without additional sockets.
+  - The CLI’s first `chat.completion` must provide `metadata` fields such as `protocol_version`, `input_format`, `output_format`, and `capabilities` (explicitly including `chat.completion.chunk` support).
+  - Event semantics must cover `result/heartbeat`, `result/cancel`, `x-qwen-session-event`, and `control_request/control_response`, along with OpenAI-style error objects.
+- **MCP Event Flow**:
+  - When the CLI emits `control_request{subtype:"mcp_message"}`, the SDK forwards the JSON-RPC payload to the in-process MCP server, handles `tools/list` / `tools/call`, then wraps the result in `control_response` and writes it back to stdin.
+- **Authorization Split and Benefits**:
+  - The CLI still triggers `control_request{subtype:"can_use_tool"}` for permission checks, which the SDK evaluates before executing MCP calls.
+  - Tool execution remains in-process within the SDK, reducing latency while keeping the existing approval/Hook pipeline aligned with Claude Agent SDK practices.
+
 ## Worker Pool and Reuse
 
 | Dimension | Design Highlights | Implementation Status |
@@ -204,6 +228,7 @@ sequenceDiagram
 | Configuration Options | `min_workers`, `max_workers`, `idle_timeout`, `max_sessions_per_worker`, `health_check_interval` | Must be exposed in SDK/CLI configuration |
 | Observability | Structured logs, metric export, trace linkage | SDK and CLI each integrate separately |
 
+- **Environment Note**: Each worker is a qwen-code CLI subprocess; the CLI manages sandboxing and tool bridging, while the SDK coordinates solely through STDIN/STDOUT.
 - Workers are dedicated to a single session at a time; once the session ends, they return to the idle pool.
 - Reuse depends on clearing session variables, closing file handles, and resetting environment variables.
 - Health checks cover memory leaks, zombie processes, and deadlocks; workers restart automatically on abnormal status.
@@ -230,11 +255,16 @@ worker_pool:
 | `user/workspace` | JSON object or file/directory path | SDK generates `settings.json` in a temporary directory and mounts it to the CLI |
 | `overrides` | Key-value overrides such as `model.name`, `tools.allowed` | Written directly into the temporary configuration file |
 
-- Before workers launch the CLI they create an isolated configuration directory and inject it via new environment variables or `--settings-profile`.
-- When the worker pool shuts down, it must clean up the temporary directory to prevent configuration leakage.
-- Logs should print a profile summary (without sensitive data) to simplify diagnosing configuration mismatches.
-- The CLI must add parsing logic for the corresponding environment variables and fallbacks.
-- The current CLI does not yet support per-subprocess configuration; future RFCs/PRs will address it.
+- **Ecosystem Reuse**: Inherits the CLI’s multi-layer settings hierarchy (`SettingScope.System/SystemDefaults/User/Workspace`) while keeping each `QwenClient` isolated; if no profile is provided the CLI falls back to its default loading order.
+- **Implementation Steps**:
+  1. Add a `settings_profile` field to `QwenClientOptions` / `QwenAgentOptions` across Python and TypeScript SDKs.
+  2. Before launching the CLI, write the profile into an isolated directory and configure `--setting-sources` / `--settings` (or equivalent flags).
+  3. Set environment variables such as `QWEN_CODE_USER_SETTINGS_PATH` and `QWEN_CODE_WORKSPACE_SETTINGS_PATH` to point at the generated temporary files.
+  4. Remove the temporary directory when the worker pool shuts down to avoid configuration leakage.
+- **Logging & Troubleshooting**: Emit a redacted profile summary in logs to simplify diagnosing configuration mismatches.
+- **Security Considerations**: Only the host application injects configuration; no fallback to shared paths, avoiding cross-tenant contamination. Sensitive tokens and paths must be guarded.
+- **Compatibility**: The CLI must add parsing logic for the new environment variables and gracefully ignore unrecognized keys.
+- **Current Status Reminder**: The CLI does not yet support per-subprocess configuration; additional RFCs/PRs are required to deliver `--settings-profile` and related environment variables.
 
 ## Agent SDK Orchestration Capabilities
 
