@@ -9,6 +9,8 @@
 | 架构范围 | Qwen-Code Agent SDK 与 qwen-code CLI 的子进程编排、控制协议、可观测与配置体系 |
 | 关键目标 | 为第三方应用提供统一 IPC 通信、Worker 池治理、权限控制与工具桥接能力 |
 
+- **核心组件**: 文档聚焦 Qwen-Code Agent SDK, 在宿主进程内封装会话路由、控制协议与 Worker 池治理, 面向多语言场景提供统一接入。
+- **核心职能**: 会话调度与路由；CLI 子进程生命周期与资源治理；控制协议 Hook 与权限判定；轻量日志输出与可观测接入；观察性数据采集（日志、指标、追踪）。
 - 面向多语言 SDK，统一封装 CLI 子进程生命周期与 JSONL 协议。
 - 提供会话调度、权限治理、Hook/MCP 回调、日志与指标采集的一致接口。
 - 以与 Claude Agent SDK 对齐的协议规范，降低多端协作与生态集成成本。
@@ -114,6 +116,9 @@ flowchart LR
 
 ### Python SDK 细节
 
+- **运行时与分发**: 需 Python 3.10+；采用 `pyproject.toml + hatchling` 发布；提供 `qwen_agent_sdk` 命名空间与 `py.typed`。
+- **环境依赖**: 需预装 Node.js 及 `qwen-code` CLI，SDK 启动前通过 `which qwen` 或 `QWEN_BIN` 环境变量定位二进制。
+- **核心依赖**: `anyio>=4`、`typing_extensions`、`mcp>=0.1`、`pydantic>=2`。
 - **适用场景**：第三方后端服务、希望自定义交互体验或进行服务端调用的场景。
 - **API 设计**：
   - `async def query(...) -> AsyncIterator[Message]`：对齐 Anthropic `query()` 的流式接口。
@@ -139,6 +144,8 @@ flowchart LR
 
 ### TypeScript SDK 细节
 
+- **运行时与分发**: 需 Node.js 18+；包名 `@qwen-agent/sdk`，默认 ESM 导出并通过 `exports` 暴露 CJS；使用 `tsup` 生成 `dist/esm`、`dist/cjs`、`dist/types`。
+- **核心依赖**: `@qwen-code/cli`（peerDependency）、`zx/execa`、`eventemitter3`。
 - **API 能力**：
   - `createAgentManager(options)`：提供 `createSession`、`run`、`forkSession`。
   - `session.stream(task)`：返回 `AsyncIterable<AgentMessage>`，可 `for await` 消费。
@@ -147,9 +154,11 @@ flowchart LR
   - `agents` 选项：支持内联多代理拓扑，结合 `forkSession` 构建子代理。
 - **实现要点**：
   - 使用 `execa` 启动 CLI，统一解析 stdout 为 `AgentStreamChunk`。
+  - `ProcessTransport` 逐行解码 stdout (`JSON.parse`)，通过 `EventEmitter` 推送 `control_request`、`result/*`、`chat.completion*` 事件，所有反向 `control_response` 共用子进程 stdin。
   - 维持 `result/heartbeat` 定时器，超时自动重启 Worker。
   - `pendingControl` 映射配合 `request_id` 路由 `control_request`。
   - 回调 Promise 生成标准化 `control_response` payload；未注册时走默认策略。
+  - `onPermissionRequest`、`onHookEvent` 等回调 Promise 化处理，统一生成 `control_response`，未注册时沿用默认策略避免 CLI 阻塞。
   - `defineTools()` 将 TS 函数组装为 in-process MCP server，透传 JSON-RPC。
   - 初始化阶段等待 CLI 首条 `chat.completion` 握手信息，并通过 `control_request{subtype:"initialize"}` 发送 Hook/工具能力。
   - 异常场景记录 verbose 日志并返回 `control_response{subtype:"error"}`。
@@ -222,6 +231,7 @@ sequenceDiagram
 | 配置项 | `min_workers`、`max_workers`、`idle_timeout`、`max_sessions_per_worker`、`health_check_interval` | 需在 SDK/CLI 配置中暴露 |
 | 可观测 | 结构化日志、指标导出、Trace 链接 | SDK/CLI 各自接入 |
 
+- **环境说明**: Worker 本质是 qwen-code CLI 子进程，其容器/沙箱与工具桥接由 CLI 管理，SDK 仅通过 STDIN/STDOUT 进行调度与控制。
 - Worker 仅在单会话期间占用，保证隔离；会话结束后回到空闲池。
 - 复用依赖清理会话变量、关闭文件句柄、重置环境变量。
 - 健康检查覆盖内存泄漏、僵尸进程、卡死检测，异常时自动重启。
