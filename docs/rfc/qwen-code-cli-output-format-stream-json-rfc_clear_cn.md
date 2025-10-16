@@ -123,6 +123,7 @@
 - `source`: `assistant`、`tool`、`console`、`system`；便于前端分层展示。
 - `spans.style.theme_token`: 复用 CLI 主题 (`AccentGreen`、`DiffAdded` 等)。
 - `ansi`: 原始 ANSI 序列位置，方便前端重放。
+- `console_level`: 当 `source=console` 时取 `log` / `warn` / `error` / `info` / `debug`，与 `ConsolePatcher` 输出保持一致。
 - `exit_code`: 当 `source=system` 且流程结束时给出退出码。
 - `prompt_id`: 关联到具体回合。
 
@@ -220,7 +221,7 @@
 - `options`：单次请求参数覆写（模型、采样、工具白名单）。
 - 扩展字段：
   - `tool_call_id`：`origin=tool_response` 时必填，用于匹配输出事件。
-  - `continuation`: 布尔值，等价 `submitQuery(...,{isContinuation:true})`。
+  - `continuation`: 布尔值，等价 `submitQuery(...,{isContinuation:true})`；缺省时 CLI 会根据 `origin` 与命令上下文判断是否续写。
   - `tool_request`: 镜像 `ToolCallRequestInfo`，支撑并发工具与子代理。
 
 ### 会话控制
