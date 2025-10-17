@@ -68,6 +68,10 @@ describe('runNonInteractive', () => {
       getFullContext: vi.fn().mockReturnValue(false),
       getContentGeneratorConfig: vi.fn().mockReturnValue({}),
       getDebugMode: vi.fn().mockReturnValue(false),
+      getOutputFormat: vi.fn().mockReturnValue('text'),
+      getIncludePartialMessages: vi.fn().mockReturnValue(false),
+      getSessionId: vi.fn().mockReturnValue('session-id'),
+      getModel: vi.fn().mockReturnValue('test-model'),
     } as unknown as Config;
 
     const { handleAtCommand } = await import(
@@ -152,6 +156,142 @@ describe('runNonInteractive', () => {
     );
     expect(processStdoutSpy).toHaveBeenCalledWith('Final answer');
     expect(processStdoutSpy).toHaveBeenCalledWith('\n');
+  });
+
+  it('should emit stream-json envelopes when output format is stream-json', async () => {
+    (mockConfig.getOutputFormat as vi.Mock).mockReturnValue('stream-json');
+    const writes: string[] = [];
+    processStdoutSpy.mockImplementation((chunk: string | Uint8Array) => {
+      if (typeof chunk === 'string') {
+        writes.push(chunk);
+      } else {
+        writes.push(Buffer.from(chunk).toString('utf8'));
+      }
+      return true;
+    });
+
+    const events: ServerGeminiStreamEvent[] = [
+      { type: GeminiEventType.Content, value: 'Hello JSON' },
+    ];
+    mockGeminiClient.sendMessageStream.mockReturnValue(
+      createStreamFromEvents(events),
+    );
+
+    await runNonInteractive(mockConfig, 'Stream mode input', 'prompt-id-json');
+
+    const envelopes = writes
+      .join('')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+
+    expect(envelopes.at(0)?.type).toBe('user');
+    expect(envelopes.at(1)?.type).toBe('assistant');
+    expect(envelopes.at(1)?.message?.content?.[0]?.text).toBe('Hello JSON');
+    expect(envelopes.at(-1)?.type).toBe('result');
+  });
+
+  it('should emit stream events when include-partial-messages is enabled', async () => {
+    (mockConfig.getOutputFormat as vi.Mock).mockReturnValue('stream-json');
+    (mockConfig.getIncludePartialMessages as vi.Mock).mockReturnValue(true);
+    const writes: string[] = [];
+    processStdoutSpy.mockImplementation((chunk: string | Uint8Array) => {
+      if (typeof chunk === 'string') {
+        writes.push(chunk);
+      } else {
+        writes.push(Buffer.from(chunk).toString('utf8'));
+      }
+      return true;
+    });
+
+    const events: ServerGeminiStreamEvent[] = [
+      { type: GeminiEventType.Content, value: 'A' },
+      { type: GeminiEventType.Content, value: 'B' },
+    ];
+    mockGeminiClient.sendMessageStream.mockReturnValue(
+      createStreamFromEvents(events),
+    );
+
+    await runNonInteractive(mockConfig, 'Partial stream', 'prompt-id-partial');
+
+    const envelopes = writes
+      .join('')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+
+    const streamEvents = envelopes.filter(
+      (envelope) => envelope.type === 'stream_event',
+    );
+
+    expect(streamEvents.length).toBeGreaterThan(0);
+    expect(
+      streamEvents.some(
+        (event) => event.event?.type === 'content_block_delta',
+      ),
+    ).toBe(true);
+    expect(envelopes.at(-1)?.type).toBe('result');
+  });
+
+  it('should emit tool result envelopes in stream-json mode', async () => {
+    (mockConfig.getOutputFormat as vi.Mock).mockReturnValue('stream-json');
+    const writes: string[] = [];
+    processStdoutSpy.mockImplementation((chunk: string | Uint8Array) => {
+      if (typeof chunk === 'string') {
+        writes.push(chunk);
+      } else {
+        writes.push(Buffer.from(chunk).toString('utf8'));
+      }
+      return true;
+    });
+
+    const toolCallEvent: ServerGeminiStreamEvent = {
+      type: GeminiEventType.ToolCallRequest,
+      value: {
+        callId: 'tool-1',
+        name: 'testTool',
+        args: { value: 1 },
+        isClientInitiated: false,
+        prompt_id: 'prompt-id-stream-tool',
+      },
+    };
+    mockCoreExecuteToolCall.mockResolvedValue({
+      responseParts: [{ text: 'Tool output' }],
+      resultDisplay: 'Tool output',
+    });
+
+    const firstEvents: ServerGeminiStreamEvent[] = [toolCallEvent];
+    const secondEvents: ServerGeminiStreamEvent[] = [
+      { type: GeminiEventType.Content, value: 'Done' },
+    ];
+
+    mockGeminiClient.sendMessageStream
+      .mockReturnValueOnce(createStreamFromEvents(firstEvents))
+      .mockReturnValueOnce(createStreamFromEvents(secondEvents));
+
+    await runNonInteractive(
+      mockConfig,
+      'Tool invocation',
+      'prompt-id-stream-tool',
+    );
+
+    const envelopes = writes
+      .join('')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+
+    const userEnvelopes = envelopes.filter((env) => env.type === 'user');
+    expect(
+      userEnvelopes.some(
+        (env) =>
+          env.parent_tool_use_id === 'tool-1' &&
+          env.message?.content?.[0]?.type === 'tool_result',
+      ),
+    ).toBe(true);
+    expect(envelopes.at(-2)?.type).toBe('assistant');
+    expect(envelopes.at(-2)?.message?.content?.[0]?.text).toBe('Done');
+    expect(envelopes.at(-1)?.type).toBe('result');
   });
 
   it('should handle error during tool execution and should send error back to the model', async () => {

@@ -18,6 +18,7 @@ import type { Content, Part } from '@google/genai';
 
 import { ConsolePatcher } from './ui/utils/ConsolePatcher.js';
 import { handleAtCommand } from './ui/hooks/atCommandProcessor.js';
+import { StreamJsonWriter } from './streamJson/writer.js';
 
 export async function runNonInteractive(
   config: Config,
@@ -28,6 +29,13 @@ export async function runNonInteractive(
     stderr: true,
     debugMode: config.getDebugMode(),
   });
+
+  const isStreamJsonOutput = config.getOutputFormat() === 'stream-json';
+  const streamJsonWriter = isStreamJsonOutput
+    ? new StreamJsonWriter(config, config.getIncludePartialMessages())
+    : undefined;
+  const startTime = Date.now();
+  let turnCount = 0;
 
   try {
     consolePatcher.patch();
@@ -60,11 +68,13 @@ export async function runNonInteractive(
       );
     }
 
-    let currentMessages: Content[] = [
-      { role: 'user', parts: processedQuery as Part[] },
-    ];
+    const initialParts = processedQuery as Part[];
+    let currentMessages: Content[] = [{ role: 'user', parts: initialParts }];
 
-    let turnCount = 0;
+    if (isStreamJsonOutput) {
+      streamJsonWriter?.emitUserMessageFromParts(initialParts);
+    }
+
     while (true) {
       turnCount++;
       if (
@@ -83,6 +93,8 @@ export async function runNonInteractive(
         prompt_id,
       );
 
+      const assistantBuilder = streamJsonWriter?.createAssistantBuilder();
+
       for await (const event of responseStream) {
         if (abortController.signal.aborted) {
           console.error('Operation cancelled.');
@@ -90,11 +102,20 @@ export async function runNonInteractive(
         }
 
         if (event.type === GeminiEventType.Content) {
-          process.stdout.write(event.value);
+          if (isStreamJsonOutput) {
+            assistantBuilder?.appendText(event.value);
+          } else {
+            process.stdout.write(event.value);
+          }
         } else if (event.type === GeminiEventType.ToolCallRequest) {
           toolCallRequests.push(event.value);
+          if (isStreamJsonOutput) {
+            assistantBuilder?.appendToolUse(event.value);
+          }
         }
       }
+
+      assistantBuilder?.finalize();
 
       if (toolCallRequests.length > 0) {
         const toolResponseParts: Part[] = [];
@@ -106,9 +127,21 @@ export async function runNonInteractive(
           );
 
           if (toolResponse.error) {
+            const message =
+              toolResponse.resultDisplay || toolResponse.error.message;
             console.error(
-              `Error executing tool ${requestInfo.name}: ${toolResponse.resultDisplay || toolResponse.error.message}`,
+              `Error executing tool ${requestInfo.name}: ${message}`,
             );
+            if (isStreamJsonOutput) {
+              streamJsonWriter?.emitSystemMessage('tool_error', {
+                tool: requestInfo.name,
+                message,
+              });
+            }
+          }
+
+          if (isStreamJsonOutput) {
+            streamJsonWriter?.emitToolResult(requestInfo, toolResponse);
           }
 
           if (toolResponse.responseParts) {
@@ -117,17 +150,32 @@ export async function runNonInteractive(
         }
         currentMessages = [{ role: 'user', parts: toolResponseParts }];
       } else {
-        process.stdout.write('\n'); // Ensure a final newline
+        if (isStreamJsonOutput) {
+          streamJsonWriter?.emitResult({
+            isError: false,
+            durationMs: Date.now() - startTime,
+            numTurns: turnCount,
+          });
+        } else {
+          process.stdout.write('\n'); // Ensure a final newline
+        }
         return;
       }
     }
   } catch (error) {
-    console.error(
-      parseAndFormatApiError(
-        error,
-        config.getContentGeneratorConfig()?.authType,
-      ),
+    const formattedError = parseAndFormatApiError(
+      error,
+      config.getContentGeneratorConfig()?.authType,
     );
+    console.error(formattedError);
+    if (isStreamJsonOutput) {
+      streamJsonWriter?.emitResult({
+        isError: true,
+        durationMs: Date.now() - startTime,
+        numTurns: turnCount,
+        errorMessage: formattedError,
+      });
+    }
     throw error;
   } finally {
     consolePatcher.cleanup();
