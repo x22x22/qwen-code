@@ -48,7 +48,7 @@ When run in this mode, every stdout line is a standalone JSON object you can par
 To keep a session open for multiple messages, omit `--prompt` and keep stdin open (for example, by running the CLI directly and typing JSON lines):
 
 ```bash
-node packages/cli/dist/index.js --input-format stream-json --output-format stream-json
+npm run stream-json-session
 ```
 
 The process will remain active until EOF (`Ctrl+D`) or an explicit `control_request.interrupt`, making it suitable for SDK transports that maintain a persistent subprocess connection.
