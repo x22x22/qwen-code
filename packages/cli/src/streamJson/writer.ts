@@ -18,6 +18,7 @@ import {
   type StreamJsonMessageStreamEvent,
   type StreamJsonOutputEnvelope,
   type StreamJsonStreamEventEnvelope,
+  type StreamJsonUsage,
   type StreamJsonToolResultBlock,
 } from './types.js';
 
@@ -27,6 +28,10 @@ export interface StreamJsonResultOptions {
   readonly durationMs?: number;
   readonly apiDurationMs?: number;
   readonly numTurns: number;
+  readonly usage?: StreamJsonUsage;
+  readonly totalCostUsd?: number;
+  readonly summary?: string;
+  readonly subtype?: string;
 }
 
 export class StreamJsonWriter {
@@ -88,7 +93,8 @@ export class StreamJsonWriter {
   emitResult(options: StreamJsonResultOptions): void {
     const envelope: StreamJsonOutputEnvelope = {
       type: 'result',
-      subtype: options.isError ? 'error' : 'session_summary',
+      subtype:
+        options.subtype ?? (options.isError ? 'error' : 'session_summary'),
       is_error: options.isError,
       session_id: this.sessionId,
       num_turns: options.numTurns,
@@ -99,6 +105,15 @@ export class StreamJsonWriter {
     }
     if (typeof options.apiDurationMs === 'number') {
       envelope.duration_api_ms = options.apiDurationMs;
+    }
+    if (options.summary) {
+      envelope.summary = options.summary;
+    }
+    if (options.usage) {
+      envelope.usage = options.usage;
+    }
+    if (typeof options.totalCostUsd === 'number') {
+      envelope.total_cost_usd = options.totalCostUsd;
     }
     if (options.errorMessage) {
       envelope.error = { message: options.errorMessage };
@@ -111,6 +126,7 @@ export class StreamJsonWriter {
     const envelope: StreamJsonOutputEnvelope = {
       type: 'system',
       subtype,
+      session_id: this.sessionId,
       data,
     };
     this.writeEnvelope(envelope);
@@ -164,6 +180,7 @@ class StreamJsonAssistantMessageBuilder {
   private readonly openBlocks = new Set<number>();
   private started = false;
   private finalized = false;
+  private messageId: string | null = null;
 
   constructor(
     private readonly writer: StreamJsonWriter,
@@ -187,14 +204,35 @@ class StreamJsonAssistantMessageBuilder {
     }
 
     currentBlock.text += fragment;
-    if (this.includePartialMessages) {
-      const index = this.blocks.length - 1;
-      this.writer.emitStreamEvent({
-        type: 'content_block_delta',
-        index,
-        delta: { type: 'text_delta', text: fragment },
-      });
+    const index = this.blocks.length - 1;
+    this.emitEvent({
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'text_delta', text: fragment },
+    });
+  }
+
+  appendThinking(fragment: string): void {
+    if (this.finalized) {
+      return;
     }
+    this.ensureMessageStarted();
+
+    let currentBlock = this.blocks[this.blocks.length - 1];
+    if (!currentBlock || currentBlock.type !== 'thinking') {
+      currentBlock = { type: 'thinking', thinking: '' };
+      const index = this.blocks.length;
+      this.blocks.push(currentBlock);
+      this.openBlock(index, currentBlock);
+    }
+
+    currentBlock.thinking = `${currentBlock.thinking ?? ''}${fragment}`;
+    const index = this.blocks.length - 1;
+    this.emitEvent({
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'thinking_delta', thinking: fragment },
+    });
   }
 
   appendToolUse(request: ToolCallRequestInfo): void {
@@ -211,6 +249,14 @@ class StreamJsonAssistantMessageBuilder {
     };
     this.blocks.push(block);
     this.openBlock(index, block);
+    this.emitEvent({
+      type: 'content_block_delta',
+      index,
+      delta: {
+        type: 'input_json_delta',
+        partial_json: JSON.stringify(request.args ?? {}),
+      },
+    });
     this.closeBlock(index);
   }
 
@@ -233,7 +279,16 @@ class StreamJsonAssistantMessageBuilder {
     }
 
     if (this.includePartialMessages && this.started) {
-      this.writer.emitStreamEvent({ type: 'message_stop' });
+      this.emitEvent({
+        type: 'message_stop',
+        message: {
+          type: 'assistant',
+          role: 'assistant',
+          model: this.model,
+          session_id: this.sessionId,
+          id: this.messageId ?? undefined,
+        },
+      });
     }
 
     const envelope: StreamJsonAssistantEnvelope = {
@@ -253,23 +308,24 @@ class StreamJsonAssistantMessageBuilder {
       return;
     }
     this.started = true;
-    if (this.includePartialMessages) {
-      this.writer.emitStreamEvent({
-        type: 'message_start',
-        message: {
-          type: 'assistant',
-          session_id: this.sessionId,
-        },
-      });
+    if (!this.messageId) {
+      this.messageId = randomUUID();
     }
+    this.emitEvent({
+      type: 'message_start',
+      message: {
+        type: 'assistant',
+        role: 'assistant',
+        model: this.model,
+        session_id: this.sessionId,
+        id: this.messageId,
+      },
+    });
   }
 
   private openBlock(index: number, block: StreamJsonContentBlock): void {
-    if (!this.includePartialMessages) {
-      return;
-    }
     this.openBlocks.add(index);
-    this.writer.emitStreamEvent({
+    this.emitEvent({
       type: 'content_block_start',
       index,
       content_block: block,
@@ -277,16 +333,23 @@ class StreamJsonAssistantMessageBuilder {
   }
 
   private closeBlock(index: number): void {
-    if (!this.includePartialMessages) {
-      return;
-    }
     if (!this.openBlocks.has(index)) {
       return;
     }
     this.openBlocks.delete(index);
-    this.writer.emitStreamEvent({
+    this.emitEvent({
       type: 'content_block_stop',
       index,
     });
+  }
+
+  private emitEvent(event: StreamJsonMessageStreamEvent): void {
+    if (!this.includePartialMessages) {
+      return;
+    }
+    const enriched = this.messageId
+      ? { ...event, message_id: this.messageId }
+      : event;
+    this.writer.emitStreamEvent(enriched);
   }
 }

@@ -69,6 +69,7 @@ export interface StreamJsonUserEnvelope {
 export interface StreamJsonSystemEnvelope {
   type: 'system';
   subtype?: string;
+  session_id?: string;
   data?: unknown;
 }
 
