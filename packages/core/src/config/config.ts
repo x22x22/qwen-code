@@ -214,6 +214,9 @@ export interface ConfigParameters {
   sandbox?: SandboxConfig;
   targetDir: string;
   debugMode: boolean;
+  inputFormat?: 'text' | 'stream-json';
+  outputFormat?: OutputFormat | 'text' | 'json' | 'stream-json';
+  includePartialMessages?: boolean;
   question?: string;
   fullContext?: boolean;
   coreTools?: string[];
@@ -282,6 +285,25 @@ export interface ConfigParameters {
   output?: OutputSettings;
 }
 
+function normalizeConfigOutputFormat(
+  format: OutputFormat | 'text' | 'json' | 'stream-json' | undefined,
+): OutputFormat | 'stream-json' | undefined {
+  if (!format) {
+    return undefined;
+  }
+  switch (format) {
+    case 'stream-json':
+      return 'stream-json';
+    case 'json':
+    case OutputFormat.JSON:
+      return OutputFormat.JSON;
+    case 'text':
+    case OutputFormat.TEXT:
+    default:
+      return OutputFormat.TEXT;
+  }
+}
+
 export class Config {
   private toolRegistry!: ToolRegistry;
   private promptRegistry!: PromptRegistry;
@@ -296,6 +318,9 @@ export class Config {
   private readonly targetDir: string;
   private workspaceContext: WorkspaceContext;
   private readonly debugMode: boolean;
+  private readonly inputFormat: 'text' | 'stream-json';
+  private readonly outputFormat: OutputFormat | 'stream-json';
+  private readonly includePartialMessages: boolean;
   private readonly question: string | undefined;
   private readonly fullContext: boolean;
   private readonly coreTools: string[] | undefined;
@@ -370,7 +395,6 @@ export class Config {
   private readonly enableToolOutputTruncation: boolean;
   private readonly eventEmitter?: EventEmitter;
   private readonly useSmartEdit: boolean;
-  private readonly outputSettings: OutputSettings;
 
   constructor(params: ConfigParameters) {
     this.sessionId = params.sessionId;
@@ -383,6 +407,12 @@ export class Config {
       params.includeDirectories ?? [],
     );
     this.debugMode = params.debugMode;
+    this.inputFormat = params.inputFormat ?? 'text';
+    const normalizedOutputFormat = normalizeConfigOutputFormat(
+      params.outputFormat ?? params.output?.format,
+    );
+    this.outputFormat = normalizedOutputFormat ?? OutputFormat.TEXT;
+    this.includePartialMessages = params.includePartialMessages ?? false;
     this.question = params.question;
     this.fullContext = params.fullContext ?? false;
     this.coreTools = params.coreTools;
@@ -480,10 +510,6 @@ export class Config {
     this.vlmSwitchMode = params.vlmSwitchMode;
     this.fileExclusions = new FileExclusions(this);
     this.eventEmitter = params.eventEmitter;
-    this.outputSettings = {
-      format: params.output?.format ?? OutputFormat.TEXT,
-    };
-
     if (params.contextFileName) {
       setGeminiMdFilename(params.contextFileName);
     }
@@ -768,6 +794,14 @@ export class Config {
     return this.showMemoryUsage;
   }
 
+  getInputFormat(): 'text' | 'stream-json' {
+    return this.inputFormat;
+  }
+
+  getIncludePartialMessages(): boolean {
+    return this.includePartialMessages;
+  }
+
   getAccessibility(): AccessibilitySettings {
     return this.accessibility;
   }
@@ -1048,10 +1082,8 @@ export class Config {
     return this.useSmartEdit;
   }
 
-  getOutputFormat(): OutputFormat {
-    return this.outputSettings?.format
-      ? this.outputSettings.format
-      : OutputFormat.TEXT;
+  getOutputFormat(): OutputFormat | 'stream-json' {
+    return this.outputFormat;
   }
 
   async getGitService(): Promise<GitService> {
