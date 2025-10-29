@@ -55,5 +55,10 @@ logs/
 # GHA credentials
 gha-creds-*.json
 
+# Python caches
+__pycache__/
+*.py[codz]
+*$py.class
+
 # Log files
 patch_output.log

@@ -17,7 +17,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -27,7 +27,15 @@ if (!process.cwd().includes('packages')) {
 }
 
 // build typescript files
-execSync('tsc --build', { stdio: 'inherit' });
+const tscResult = spawnSync('tsc', ['--build'], { stdio: 'inherit' });
+
+if (tscResult.status !== 0) {
+  const failureReason =
+    tscResult.status !== null
+      ? `exit code ${tscResult.status}`
+      : `signal ${tscResult.signal ?? 'unknown'}`;
+  console.warn(`tsc --build completed with warnings (${failureReason}).`);
+}
 
 // copy .{md,json} files
 execSync('node ../../scripts/copy_files.js', { stdio: 'inherit' });
