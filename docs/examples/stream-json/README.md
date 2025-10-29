@@ -12,7 +12,7 @@ This example demonstrates how to drive the Qwen Code CLI directly via the JSON L
 1. Prepare an input stream (write it to `examples/stream-json/request.jsonl`):
 
    ```bash
-   cat <<'EOF' > examples/stream-json/request.jsonl
+   cat <<'EOF' > docs/examples/stream-json/request.jsonl
    {"type":"control_request","request_id":"req-init-1","request":{"subtype":"initialize","hooks":null}}
    {"type":"user","message":{"role":"user","content":[{"type":"text","text":"请阅读 README.md 并总结三个关键特性。"}]}}
    {"type":"control_request","request_id":"req-interrupt-1","request":{"subtype":"interrupt"}}
@@ -26,8 +26,8 @@ This example demonstrates how to drive the Qwen Code CLI directly via the JSON L
      --input-format stream-json \
      --output-format stream-json \
      --include-partial-messages \
-     --model qwen-coder \
-     < examples/stream-json/request.jsonl
+     --model glm-4.6 \
+     < docs/examples/stream-json/request.jsonl
    ```
 
 3. Observe standard output: when the CLI initializes successfully, it prints `system/init`, `control_response`, and `stream_event` entries containing `thinking_delta` and `text_delta`, and finally ends with a `result` event.
@@ -48,7 +48,7 @@ python docs/examples/stream-json/simple_stream_json_client.py
 By default the script launches the CLI via `npm run qwen -- …`. To replace the command, set the `QWEN_STREAM_JSON_COMMAND` environment variable, for example:
 
 ```bash
-# export QWEN_STREAM_JSON_COMMAND="npm run qwen -- --input-format stream-json --output-format stream-json --include-partial-messages --model qwen-coder"
+# export QWEN_STREAM_JSON_COMMAND="npm run qwen -- --input-format stream-json --output-format stream-json --include-partial-messages --model glm-4.6"
 export QWEN_STREAM_JSON_COMMAND="npm run qwen -- --input-format stream-json --output-format stream-json --include-partial-messages"
 python docs/examples/stream-json/simple_stream_json_client.py
 ```
@@ -130,14 +130,14 @@ Use the following commands to manually check that the core capabilities introduc
      --input-format stream-json \
      --output-format stream-json \
      --include-partial-messages \
-     --model qwen-coder \
-     < examples/stream-json/request.jsonl
+     --model glm-4.6 \
+     < docs/examples/stream-json/request.jsonl
    ```
    Expected output: initialization includes the complete `system/init` fields; during the assistant response, `message_start`, `content_block_start/delta/stop`, and `message_stop` events appear.
 
 2. **Real-Time Control Channel** (verify advanced subtypes like `can_use_tool` and `hook_callback`)
    ```bash
-   npm run qwen -- --input-format stream-json --output-format stream-json --model qwen-coder
+   npm run qwen -- --input-format stream-json --output-format stream-json --model glm-4.6
    # Enter sequentially:
    {"type":"control_request","request_id":"req-init","request":{"subtype":"initialize"}}
    {"type":"user","message":{"role":"user","content":[{"type":"text","text":"请执行 ls"}]}}
@@ -146,14 +146,14 @@ Use the following commands to manually check that the core capabilities introduc
 
 3. **MCP Message Bridging** (verify `mcp_message` passthrough)
    ```bash
-   npm run qwen -- --input-format stream-json --output-format stream-json --model qwen-coder
+   npm run qwen -- --input-format stream-json --output-format stream-json --model glm-4.6
    {"type":"control_request","request_id":"req-mcp","request":{"subtype":"mcp_message","server_name":"default","message":{"jsonrpc":"2.0","id":"1","method":"tools/list"}}}
    ```
    Expected output: `control_response.success` contains `mcp_response.result.tools` listing the registered MCP tools. If MCP is not configured, the structured fields in `control_response.error` can be inspected instead.
 
 4. **Tool Result Linking** (verify `tool_result` carrying and `parent_tool_use_id`)
    ```bash
-   npm run qwen -- --input-format stream-json --output-format stream-json --model qwen-coder
+   npm run qwen -- --input-format stream-json --output-format stream-json --model glm-4.6
    {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"demo-tool","content":[{"type":"text","text":"手动工具结果"}]}]},"parent_tool_use_id":"demo-tool"}
    ```
    Expected output: during the subsequent `runNonInteractive` call the CLI reads this `tool_result`, continues the dialog when necessary, and suppresses redundant user echoes.

@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable, Dict, List
 
 DEFAULT_COMMAND = (
     "npm run qwen -- --input-format stream-json --output-format stream-json "
-    "--include-partial-messages --model qwen-coder"
+    "--include-partial-messages --model glm-4.6"
 )
 
 Envelope = Dict[str, Any]

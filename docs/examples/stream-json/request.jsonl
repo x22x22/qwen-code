@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"req-init-1","request":{"subtype":"initialize","hooks":null}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"请阅读 README.md 并总结三个关键特性。"}]}}

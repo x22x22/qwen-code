@@ -1,0 +1,5 @@
+{"type":"control_request","request_id":"req-init-interrupt","request":{"subtype":"initialize","hooks":null}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"请输出当前工作目录，并等待后续指令。"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"请列出当前目录中的所有文件。"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"若无更多操作，请准备结束对话。"}]}}
+{"type":"control_request","request_id":"req-interrupt-final","request":{"subtype":"interrupt"}}

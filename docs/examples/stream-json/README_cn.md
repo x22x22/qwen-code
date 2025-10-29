@@ -9,28 +9,62 @@
 
 ## CLI 快速体验
 
-1. 准备一份输入流（写入 `examples/stream-json/request.jsonl`）：
+1. 准备一份输入流（写入 `docs/examples/stream-json/request.jsonl`）：
 
    ```bash
-   cat <<'EOF' > examples/stream-json/request.jsonl
+   cat <<'EOF' > docs/examples/stream-json/request.jsonl
    {"type":"control_request","request_id":"req-init-1","request":{"subtype":"initialize","hooks":null}}
    {"type":"user","message":{"role":"user","content":[{"type":"text","text":"请阅读 README.md 并总结三个关键特性。"}]}}
-   {"type":"control_request","request_id":"req-interrupt-1","request":{"subtype":"interrupt"}}
    EOF
    ```
 
-2. 运行 CLI，并将 JSONL 管道到标准输入。仓库内推荐通过 `npm run qwen` 启动（注意 `--` 之后才是 CLI 自身参数）：
+2. 运行 CLI，并使用 `cat … -` 方式保留标准输入，便于后续继续发送控制消息或工具回执。仓库内推荐通过 `npm run qwen` 启动（注意 `--` 之后才是 CLI 自身参数）：
 
    ```bash
-   npm run qwen -- \
-     --input-format stream-json \
-     --output-format stream-json \
-     --include-partial-messages \
-     --model qwen-coder \
-     < examples/stream-json/request.jsonl
+   cat docs/examples/stream-json/request.jsonl - | \
+     npm run qwen -- \
+       --input-format stream-json \
+       --output-format stream-json \
+       --include-partial-messages \
+       --model glm-4.6
    ```
 
+   日志请看 @./logs/1.log
+
 3. 观察标准输出：当 CLI 初始化成功时会输出 `system/init`、`control_response` 以及含 `thinking_delta`、`text_delta` 的 `stream_event`，最后以 `result` 事件结束。
+
+   若需要在会话结束后主动终止 CLI，可在上一步命令的终端中手动输入：
+
+   ```
+   {"type":"control_request","request_id":"req-interrupt-1","request":{"subtype":"interrupt"}}
+   ```
+
+4. 若更希望脚本化演示“打断”能力，请另建一份输入流（命名为 `request_interrupt.jsonl`，指令与上例不同）：
+
+   ```bash
+   cat <<'EOF' > docs/examples/stream-json/request_interrupt.jsonl
+   {"type":"control_request","request_id":"req-init-interrupt","request":{"subtype":"initialize","hooks":null}}
+   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"请输出当前工作目录，并等待后续指令。"}]}}
+   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"请列出当前目录中的所有文件。"}]}}
+   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"若无更多操作，请准备结束对话。"}]}}
+   {"type":"control_request","request_id":"req-interrupt-final","request":{"subtype":"interrupt"}}
+   EOF
+   ```
+
+   随后结合 `timeout` 或额外的 `interrupt` 输出来模拟外部终止：
+
+   ```bash
+   timeout 10 sh -c \
+     "cat docs/examples/stream-json/request_interrupt.jsonl - | \
+       npm run qwen -- \
+         --input-format stream-json \
+         --output-format stream-json \
+         --include-partial-messages \
+         --model glm-4.6"
+   ```
+
+   日志请看 @./logs/2.log
+   该命令会自动发送两轮用户消息，并在最后推送 `interrupt`。当 `timeout` 到期或 CLI 处理完最后一个请求时，会立刻返回 `control_response/interrupt`，随后进程以 “OpenAI API Streaming Error: Request was aborted.” 类似日志结束——这正是预期的打断表现。
 
 > 注意：若 CLI 发出 `control_request.can_use_tool` 等事件，需要调用方实时回写 `control_response`，否则进程会等待回执。
 
@@ -45,10 +79,12 @@
 python docs/examples/stream-json/simple_stream_json_client.py
 ```
 
+日志请看 @./logs/3.log
+
 默认脚本使用 `npm run qwen -- …` 启动 CLI，如需替换命令可设置环境变量 `QWEN_STREAM_JSON_COMMAND`，例如：
 
 ```bash
-# export QWEN_STREAM_JSON_COMMAND="npm run qwen -- --input-format stream-json --output-format stream-json --include-partial-messages --model qwen-coder"
+# export QWEN_STREAM_JSON_COMMAND="npm run qwen -- --input-format stream-json --output-format stream-json --include-partial-messages --model glm-4.6"
 export QWEN_STREAM_JSON_COMMAND="npm run qwen -- --input-format stream-json --output-format stream-json --include-partial-messages"
 python docs/examples/stream-json/simple_stream_json_client.py
 ```
@@ -130,14 +166,14 @@ npx vitest run \
      --input-format stream-json \
      --output-format stream-json \
      --include-partial-messages \
-     --model qwen-coder \
-     < examples/stream-json/request.jsonl
+     --model glm-4.6 \
+     < docs/examples/stream-json/request.jsonl
    ```
    期望输出：初始化时包含完整 `system/init` 字段；助手回复过程中出现 `message_start`、`content_block_start/delta/stop` 及 `message_stop`。
 
 2. **实时控制通道**（验证 `can_use_tool`、`hook_callback` 等高级子类型）
    ```bash
-   npm run qwen -- --input-format stream-json --output-format stream-json --model qwen-coder
+   npm run qwen -- --input-format stream-json --output-format stream-json --model glm-4.6
    # 依次输入：
    {"type":"control_request","request_id":"req-init","request":{"subtype":"initialize"}}
    {"type":"user","message":{"role":"user","content":[{"type":"text","text":"请执行 ls"}]}}
@@ -146,14 +182,14 @@ npx vitest run \
 
 3. **MCP 消息桥接**（验证 `mcp_message` 透传）
    ```bash
-   npm run qwen -- --input-format stream-json --output-format stream-json --model qwen-coder
+   npm run qwen -- --input-format stream-json --output-format stream-json --model glm-4.6
    {"type":"control_request","request_id":"req-mcp","request":{"subtype":"mcp_message","server_name":"default","message":{"jsonrpc":"2.0","id":"1","method":"tools/list"}}}
    ```
    期望输出：`control_response.success` 中的 `mcp_response.result.tools` 列出已注册的 MCP 工具。若未配置 MCP，可用于验证错误回执 `control_response.error` 的结构化字段。
 
 4. **工具结果回链**（验证 `user` 信封携带 `tool_result` 与 `parent_tool_use_id`）
    ```bash
-   npm run qwen -- --input-format stream-json --output-format stream-json --model qwen-coder
+   npm run qwen -- --input-format stream-json --output-format stream-json --model glm-4.6
    {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"demo-tool","content":[{"type":"text","text":"手动工具结果"}]}]},"parent_tool_use_id":"demo-tool"}
    ```
    期望输出：CLI 会在后续调用 `runNonInteractive` 时读取该 `tool_result`，并在需要时继续衍生对话，不再记录用户回响。

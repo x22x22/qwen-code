@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 DEFAULT_COMMAND = (
     "npm run qwen -- --input-format stream-json --output-format stream-json "
-    "--include-partial-messages --model qwen-coder"
+    "--include-partial-messages --model glm-4.6"
 )
 
 
@@ -66,7 +66,7 @@ class StreamJsonClientOptions:
                         }
                     ],
                 },
-                "options": {"temporary_model": "qwen-coder"},
+                "options": {"temporary_model": "glm-4.6"},
             }
         ]
     )
