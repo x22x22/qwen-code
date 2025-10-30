@@ -201,6 +201,7 @@ export async function runNonInteractive(
       let initialPartList: PartListUnion | null = extractPartsFromEnvelope(
         options.userEnvelope,
       );
+      let usedEnvelopeInput = initialPartList !== null;
 
       if (!initialPartList) {
         let slashHandled = false;
@@ -215,6 +216,7 @@ export async function runNonInteractive(
             // A slash command can replace the prompt entirely; fall back to @-command processing otherwise.
             initialPartList = slashCommandResult as PartListUnion;
             slashHandled = true;
+            usedEnvelopeInput = false;
           }
         }
 
@@ -236,17 +238,19 @@ export async function runNonInteractive(
             );
           }
           initialPartList = processedQuery as PartListUnion;
+          usedEnvelopeInput = false;
         }
       }
 
       if (!initialPartList) {
         initialPartList = [{ text: input }];
+        usedEnvelopeInput = false;
       }
 
       const initialParts = normalizePartList(initialPartList);
       let currentMessages: Content[] = [{ role: 'user', parts: initialParts }];
 
-      if (streamJsonWriter) {
+      if (streamJsonWriter && !usedEnvelopeInput) {
         streamJsonWriter.emitUserMessageFromParts(initialParts);
       }
 

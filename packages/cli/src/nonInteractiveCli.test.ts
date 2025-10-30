@@ -22,6 +22,7 @@ import {
 import type { Part } from '@google/genai';
 import { runNonInteractive } from './nonInteractiveCli.js';
 import { vi } from 'vitest';
+import type { StreamJsonUserEnvelope } from './streamJson/types.js';
 import type { LoadedSettings } from './config/settings.js';
 
 // Mock core modules
@@ -941,6 +942,63 @@ describe('runNonInteractive', () => {
       is_error: false,
       num_turns: 1,
     });
+  });
+
+  it('should emit a single user envelope when userEnvelope is provided', async () => {
+    (mockConfig.getOutputFormat as vi.Mock).mockReturnValue('stream-json');
+    (mockConfig.getIncludePartialMessages as vi.Mock).mockReturnValue(false);
+
+    const writes: string[] = [];
+    processStdoutSpy.mockImplementation((chunk: string | Uint8Array) => {
+      if (typeof chunk === 'string') {
+        writes.push(chunk);
+      } else {
+        writes.push(Buffer.from(chunk).toString('utf8'));
+      }
+      return true;
+    });
+
+    mockGeminiClient.sendMessageStream.mockReturnValue(
+      createStreamFromEvents([
+        { type: GeminiEventType.Content, value: 'Handled once' },
+        {
+          type: GeminiEventType.Finished,
+          value: { reason: undefined, usageMetadata: { totalTokenCount: 2 } },
+        },
+      ]),
+    );
+
+    const userEnvelope = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '来自 envelope 的消息',
+          },
+        ],
+      },
+    } as unknown as StreamJsonUserEnvelope;
+
+    await runNonInteractive(
+      mockConfig,
+      mockSettings,
+      'ignored input',
+      'prompt-envelope',
+      {
+        userEnvelope,
+      },
+    );
+
+    const envelopes = writes
+      .join('')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+
+    const userEnvelopes = envelopes.filter((env) => env.type === 'user');
+    expect(userEnvelopes).toHaveLength(0);
   });
 
   it('should include usage metadata and API duration in stream-json result', async () => {
