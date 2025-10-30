@@ -90,14 +90,18 @@ describe('StreamJsonWriter', () => {
 
     const envelopes = parseEnvelopes(writes);
 
-    expect(
-      envelopes.some(
-        (env) =>
-          env.type === 'stream_event' &&
-          env.event?.type === 'content_block_delta' &&
-          env.event?.delta?.type === 'thinking_delta',
-      ),
-    ).toBe(true);
+    const hasThinkingDelta = envelopes.some((env) => {
+      if (env.type !== 'stream_event') {
+        return false;
+      }
+      if (env.event?.type !== 'content_block_delta') {
+        return false;
+      }
+      const delta = env.event.delta as { type?: string } | undefined;
+      return delta?.type === 'thinking_delta';
+    });
+
+    expect(hasThinkingDelta).toBe(true);
 
     const assistantEnvelope = envelopes.find((env) => env.type === 'assistant');
     expect(assistantEnvelope?.message.content?.[0]).toEqual({
@@ -122,14 +126,18 @@ describe('StreamJsonWriter', () => {
 
     const envelopes = parseEnvelopes(writes);
 
-    expect(
-      envelopes.some(
-        (env) =>
-          env.type === 'stream_event' &&
-          env.event?.type === 'content_block_delta' &&
-          env.event?.delta?.type === 'input_json_delta',
-      ),
-    ).toBe(true);
+    const hasInputJsonDelta = envelopes.some((env) => {
+      if (env.type !== 'stream_event') {
+        return false;
+      }
+      if (env.event?.type !== 'content_block_delta') {
+        return false;
+      }
+      const delta = env.event.delta as { type?: string } | undefined;
+      return delta?.type === 'input_json_delta';
+    });
+
+    expect(hasInputJsonDelta).toBe(true);
   });
 
   it('includes session id in system messages', () => {

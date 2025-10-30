@@ -9,10 +9,9 @@ import type { Config } from '@qwen-code/qwen-code-core';
 import {
   parseStreamJsonEnvelope,
   type StreamJsonEnvelope,
-  type StreamJsonControlRequestEnvelope,
   type StreamJsonUserEnvelope,
 } from './types.js';
-import { extractUserMessageText } from './input.js';
+import { extractUserMessageText } from './io.js';
 import { StreamJsonWriter } from './writer.js';
 import { StreamJsonController } from './controller.js';
 import { runNonInteractive } from '../nonInteractiveCli.js';
@@ -124,7 +123,7 @@ export async function runStreamJsonSession(
           });
           break;
         case 'control_request':
-          await handleControlRequest(config, controller, envelope, writer);
+          controller.handleIncomingControlRequest(config, envelope);
           break;
         case 'control_response':
           controller.handleControlResponse(envelope);
@@ -173,42 +172,4 @@ async function handleUserPrompt(
     },
     userEnvelope: job.envelope,
   });
-}
-
-async function handleControlRequest(
-  config: Config,
-  controller: StreamJsonController,
-  envelope: StreamJsonControlRequestEnvelope,
-  writer: StreamJsonWriter,
-): Promise<void> {
-  const subtype = envelope.request?.subtype;
-  switch (subtype) {
-    case 'initialize':
-      writer.emitSystemMessage('session_initialized', {
-        session_id: config.getSessionId(),
-      });
-      controller.handleControlResponse({
-        type: 'control_response',
-        request_id: envelope.request_id,
-        success: true,
-        response: { subtype: 'initialize' },
-      });
-      break;
-    case 'interrupt':
-      controller.interruptActiveRun();
-      controller.handleControlResponse({
-        type: 'control_response',
-        request_id: envelope.request_id,
-        success: true,
-        response: { subtype: 'interrupt' },
-      });
-      break;
-    default:
-      controller.handleControlResponse({
-        type: 'control_response',
-        request_id: envelope.request_id,
-        success: false,
-        error: `Unsupported control_request subtype: ${subtype ?? 'unknown'}`,
-      });
-  }
 }

@@ -12,7 +12,6 @@ import type {
 } from '@qwen-code/qwen-code-core';
 import type { Part } from '@google/genai';
 import {
-  serializeStreamJsonEnvelope,
   type StreamJsonAssistantEnvelope,
   type StreamJsonContentBlock,
   type StreamJsonMessageStreamEvent,
@@ -21,6 +20,7 @@ import {
   type StreamJsonUsage,
   type StreamJsonToolResultBlock,
 } from './types.js';
+import { writeStreamJsonEnvelope } from './io.js';
 
 export interface StreamJsonResultOptions {
   readonly isError: boolean;
@@ -146,8 +146,7 @@ export class StreamJsonWriter {
   }
 
   writeEnvelope(envelope: StreamJsonOutputEnvelope): void {
-    const line = serializeStreamJsonEnvelope(envelope);
-    process.stdout.write(`${line}\n`);
+    writeStreamJsonEnvelope(envelope);
   }
 
   private toolResultContent(

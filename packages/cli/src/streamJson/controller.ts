@@ -5,9 +5,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { Config } from '@qwen-code/qwen-code-core';
 import type { StreamJsonWriter } from './writer.js';
 import type {
   StreamJsonControlCancelRequestEnvelope,
+  StreamJsonControlRequestEnvelope,
   StreamJsonControlResponseEnvelope,
   StreamJsonOutputEnvelope,
 } from './types.js';
@@ -27,6 +29,43 @@ export class StreamJsonController {
   private activeAbortController: AbortController | null = null;
 
   constructor(private readonly writer: StreamJsonWriter) {}
+
+  handleIncomingControlRequest(
+    config: Config,
+    envelope: StreamJsonControlRequestEnvelope,
+  ): boolean {
+    const subtype = envelope.request?.subtype;
+    switch (subtype) {
+      case 'initialize':
+        this.writer.emitSystemMessage('session_initialized', {
+          session_id: config.getSessionId(),
+        });
+        this.writer.writeEnvelope({
+          type: 'control_response',
+          request_id: envelope.request_id,
+          success: true,
+          response: { subtype: 'initialize' },
+        });
+        return true;
+      case 'interrupt':
+        this.interruptActiveRun();
+        this.writer.writeEnvelope({
+          type: 'control_response',
+          request_id: envelope.request_id,
+          success: true,
+          response: { subtype: 'interrupt' },
+        });
+        return true;
+      default:
+        this.writer.writeEnvelope({
+          type: 'control_response',
+          request_id: envelope.request_id,
+          success: false,
+          error: `Unsupported control_request subtype: ${subtype ?? 'unknown'}`,
+        });
+        return false;
+    }
+  }
 
   sendControlRequest(
     subtype: string,

@@ -8,12 +8,11 @@ import { createInterface } from 'node:readline/promises';
 import process from 'node:process';
 import {
   parseStreamJsonEnvelope,
-  serializeStreamJsonEnvelope,
   type StreamJsonControlRequestEnvelope,
   type StreamJsonOutputEnvelope,
-  type StreamJsonUserEnvelope,
 } from './types.js';
 import { FatalInputError } from '@qwen-code/qwen-code-core';
+import { extractUserMessageText, writeStreamJsonEnvelope } from './io.js';
 
 export interface ParsedStreamJsonInput {
   prompt: string;
@@ -35,7 +34,9 @@ export async function readStreamJsonInput(): Promise<ParsedStreamJsonInput> {
 
 export async function parseStreamJsonInputFromIterable(
   lines: AsyncIterable<string>,
-  emitEnvelope: (envelope: StreamJsonOutputEnvelope) => void = writeEnvelope,
+  emitEnvelope: (
+    envelope: StreamJsonOutputEnvelope,
+  ) => void = writeStreamJsonEnvelope,
 ): Promise<ParsedStreamJsonInput> {
   const promptParts: string[] = [];
   let receivedUserMessage = false;
@@ -104,29 +105,4 @@ function handleControlRequest(
   });
 }
 
-export function extractUserMessageText(
-  envelope: StreamJsonUserEnvelope,
-): string {
-  const content = envelope.message?.content;
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((block) => {
-        if (block && typeof block === 'object' && 'type' in block) {
-          if (block.type === 'text' && 'text' in block) {
-            return block.text ?? '';
-          }
-          return JSON.stringify(block);
-        }
-        return '';
-      })
-      .join('\n');
-  }
-  return '';
-}
-
-function writeEnvelope(envelope: StreamJsonOutputEnvelope): void {
-  process.stdout.write(`${serializeStreamJsonEnvelope(envelope)}\n`);
-}
+export { extractUserMessageText } from './io.js';
