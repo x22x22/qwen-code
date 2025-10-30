@@ -62,7 +62,7 @@ import { WriteFileTool } from '../tools/write-file.js';
 
 // Other modules
 import { ideContextStore } from '../ide/ideContext.js';
-import { OutputFormat } from '../output/types.js';
+import { InputFormat, OutputFormat } from '../output/types.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
 import { SubagentManager } from '../subagents/subagent-manager.js';
 import {
@@ -214,8 +214,6 @@ export interface ConfigParameters {
   sandbox?: SandboxConfig;
   targetDir: string;
   debugMode: boolean;
-  inputFormat?: 'text' | 'stream-json';
-  outputFormat?: OutputFormat | 'text' | 'json' | 'stream-json';
   includePartialMessages?: boolean;
   question?: string;
   fullContext?: boolean;
@@ -283,17 +281,19 @@ export interface ConfigParameters {
   eventEmitter?: EventEmitter;
   useSmartEdit?: boolean;
   output?: OutputSettings;
+  inputFormat?: InputFormat;
+  outputFormat?: OutputFormat;
 }
 
 function normalizeConfigOutputFormat(
-  format: OutputFormat | 'text' | 'json' | 'stream-json' | undefined,
-): OutputFormat | 'stream-json' | undefined {
+  format: OutputFormat | undefined,
+): OutputFormat | undefined {
   if (!format) {
     return undefined;
   }
   switch (format) {
     case 'stream-json':
-      return 'stream-json';
+      return OutputFormat.STREAM_JSON;
     case 'json':
     case OutputFormat.JSON:
       return OutputFormat.JSON;
@@ -318,8 +318,8 @@ export class Config {
   private readonly targetDir: string;
   private workspaceContext: WorkspaceContext;
   private readonly debugMode: boolean;
-  private readonly inputFormat: 'text' | 'stream-json';
-  private readonly outputFormat: OutputFormat | 'stream-json';
+  private readonly inputFormat: InputFormat;
+  private readonly outputFormat: OutputFormat;
   private readonly includePartialMessages: boolean;
   private readonly question: string | undefined;
   private readonly fullContext: boolean;
@@ -407,7 +407,7 @@ export class Config {
       params.includeDirectories ?? [],
     );
     this.debugMode = params.debugMode;
-    this.inputFormat = params.inputFormat ?? 'text';
+    this.inputFormat = params.inputFormat ?? InputFormat.TEXT;
     const normalizedOutputFormat = normalizeConfigOutputFormat(
       params.outputFormat ?? params.output?.format,
     );
@@ -508,6 +508,7 @@ export class Config {
     this.storage = new Storage(this.targetDir);
     this.enablePromptCompletion = params.enablePromptCompletion ?? false;
     this.vlmSwitchMode = params.vlmSwitchMode;
+    this.inputFormat = params.inputFormat ?? InputFormat.TEXT;
     this.fileExclusions = new FileExclusions(this);
     this.eventEmitter = params.eventEmitter;
     if (params.contextFileName) {
@@ -1082,7 +1083,7 @@ export class Config {
     return this.useSmartEdit;
   }
 
-  getOutputFormat(): OutputFormat | 'stream-json' {
+  getOutputFormat(): OutputFormat {
     return this.outputFormat;
   }
 

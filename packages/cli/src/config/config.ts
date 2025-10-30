@@ -23,6 +23,7 @@ import {
   WriteFileTool,
   resolveTelemetrySettings,
   FatalConfigError,
+  InputFormat,
   OutputFormat,
 } from '@qwen-code/qwen-code-core';
 import type { Settings } from './settings.js';
@@ -126,12 +127,12 @@ export interface CliArgs {
 
 function normalizeOutputFormat(
   format: string | OutputFormat | undefined,
-): OutputFormat | 'stream-json' | undefined {
+): OutputFormat | undefined {
   if (!format) {
     return undefined;
   }
   if (format === 'stream-json') {
-    return 'stream-json';
+    return OutputFormat.STREAM_JSON;
   }
   if (format === 'json' || format === OutputFormat.JSON) {
     return OutputFormat.JSON;
@@ -210,8 +211,7 @@ export async function parseArguments(settings: Settings): Promise<CliArgs> {
     })
     .option('proxy', {
       type: 'string',
-      description:
-        'Proxy for Qwen Code, like schema://user:password@host:port',
+      description: 'Proxy for Qwen Code, like schema://user:password@host:port',
     })
     .deprecateOption(
       'proxy',
@@ -601,8 +601,8 @@ export async function loadCliConfig(
 
   let mcpServers = mergeMcpServers(settings, activeExtensions);
   const question = argv.promptInteractive || argv.prompt || '';
-  const inputFormat =
-    (argv.inputFormat as 'text' | 'stream-json' | undefined) ?? 'text';
+  const inputFormat: InputFormat =
+    (argv.inputFormat as InputFormat | undefined) ?? InputFormat.TEXT;
   const argvOutputFormat = normalizeOutputFormat(
     argv.outputFormat as string | OutputFormat | undefined,
   );
@@ -610,8 +610,9 @@ export async function loadCliConfig(
   const outputFormat =
     argvOutputFormat ?? settingsOutputFormat ?? OutputFormat.TEXT;
   const outputSettingsFormat: OutputFormat =
-    outputFormat === 'stream-json'
-      ? settingsOutputFormat && settingsOutputFormat !== 'stream-json'
+    outputFormat === OutputFormat.STREAM_JSON
+      ? settingsOutputFormat &&
+        settingsOutputFormat !== OutputFormat.STREAM_JSON
         ? settingsOutputFormat
         : OutputFormat.TEXT
       : (outputFormat as OutputFormat);
