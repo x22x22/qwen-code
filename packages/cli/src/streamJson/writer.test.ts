@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config, ToolCallRequestInfo } from '@qwen-code/qwen-code-core';
 import { StreamJsonWriter } from './writer.js';
+import type { StreamJsonOutputEnvelope } from './types.js';
 
 function createConfig(): Config {
   return {
@@ -15,12 +16,12 @@ function createConfig(): Config {
   } as unknown as Config;
 }
 
-function parseEnvelopes(writes: string[]): unknown[] {
+function parseEnvelopes(writes: string[]): StreamJsonOutputEnvelope[] {
   return writes
     .join('')
     .split('\n')
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line));
+    .map((line) => JSON.parse(line) as StreamJsonOutputEnvelope);
 }
 
 describe('StreamJsonWriter', () => {
@@ -62,7 +63,7 @@ describe('StreamJsonWriter', () => {
       subtype: 'session_summary',
     });
 
-    const [envelope] = parseEnvelopes(writes) as Array<Record<string, unknown>>;
+    const [envelope] = parseEnvelopes(writes);
     expect(envelope).toMatchObject({
       type: 'result',
       duration_ms: 1200,
@@ -87,7 +88,7 @@ describe('StreamJsonWriter', () => {
     builder.appendThinking(' more');
     builder.finalize();
 
-    const envelopes = parseEnvelopes(writes) as Array<Record<string, unknown>>;
+    const envelopes = parseEnvelopes(writes);
 
     expect(
       envelopes.some(
@@ -99,7 +100,7 @@ describe('StreamJsonWriter', () => {
     ).toBe(true);
 
     const assistantEnvelope = envelopes.find((env) => env.type === 'assistant');
-    expect(assistantEnvelope?.message?.content?.[0]).toEqual({
+    expect(assistantEnvelope?.message.content?.[0]).toEqual({
       type: 'thinking',
       thinking: 'Reflecting more',
     });
@@ -119,7 +120,7 @@ describe('StreamJsonWriter', () => {
     builder.appendToolUse(request);
     builder.finalize();
 
-    const envelopes = parseEnvelopes(writes) as Array<Record<string, unknown>>;
+    const envelopes = parseEnvelopes(writes);
 
     expect(
       envelopes.some(
@@ -135,7 +136,7 @@ describe('StreamJsonWriter', () => {
     const writer = new StreamJsonWriter(createConfig(), false);
     writer.emitSystemMessage('init', { foo: 'bar' });
 
-    const [envelope] = parseEnvelopes(writes) as Array<Record<string, unknown>>;
+    const [envelope] = parseEnvelopes(writes);
     expect(envelope).toMatchObject({
       type: 'system',
       subtype: 'init',

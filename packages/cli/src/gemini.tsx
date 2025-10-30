@@ -23,6 +23,7 @@ import { getStartupWarnings } from './utils/startupWarnings.js';
 import { getUserStartupWarnings } from './utils/userStartupWarnings.js';
 import { ConsolePatcher } from './ui/utils/ConsolePatcher.js';
 import { runNonInteractive } from './nonInteractiveCli.js';
+import { runStreamJsonSession } from './streamJson/session.js';
 import { ExtensionStorage, loadExtensions } from './config/extension.js';
 import {
   cleanupCheckpoints,
@@ -414,6 +415,29 @@ export async function main() {
         input = `${stdinData}\n\n${input}`;
       }
     }
+    const inputFormat =
+      typeof config.getInputFormat === 'function'
+        ? config.getInputFormat()
+        : 'text';
+
+    if (inputFormat === 'stream-json') {
+      const trimmedInput = (input ?? '').trim();
+      const nonInteractiveConfig = await validateNonInteractiveAuth(
+        settings.merged.security?.auth?.selectedType,
+        settings.merged.security?.auth?.useExternal,
+        config,
+        settings,
+      );
+
+      await runStreamJsonSession(
+        nonInteractiveConfig,
+        settings,
+        trimmedInput.length > 0 ? trimmedInput : undefined,
+      );
+      await runExitCleanup();
+      process.exit(0);
+    }
+
     if (!input) {
       console.error(
         `No input provided via stdin. Input can be provided by piping data into gemini or using the --prompt option.`,
