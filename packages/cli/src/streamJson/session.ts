@@ -6,6 +6,7 @@
 
 import readline from 'node:readline';
 import type { Config } from '@qwen-code/qwen-code-core';
+import { logUserPrompt } from '@qwen-code/qwen-code-core';
 import {
   parseStreamJsonEnvelope,
   type StreamJsonEnvelope,
@@ -140,6 +141,13 @@ export async function runStreamJsonSession(
       }
     }
   } finally {
+    while (activeRun) {
+      try {
+        await activeRun;
+      } catch {
+        // 忽略已记录的运行错误。
+      }
+    }
     rl.close();
     controller.cancelPendingRequests('Session terminated');
   }
@@ -163,6 +171,32 @@ async function handleUserPrompt(
       ? String(messageRecord['prompt_id']).trim()
       : undefined;
   const promptId = envelopePromptId ?? `stream-json-${Date.now()}`;
+
+  if (prompt.length > 0) {
+    const authType =
+      typeof (
+        config as {
+          getContentGeneratorConfig?: () => { authType?: string };
+        }
+      ).getContentGeneratorConfig === 'function'
+        ? (
+            (
+              config as {
+                getContentGeneratorConfig: () => { authType?: string };
+              }
+            ).getContentGeneratorConfig() ?? {}
+          ).authType
+        : undefined;
+
+    logUserPrompt(config, {
+      'event.name': 'user_prompt',
+      'event.timestamp': new Date().toISOString(),
+      prompt,
+      prompt_id: promptId,
+      auth_type: authType,
+      prompt_length: prompt.length,
+    });
+  }
 
   await runNonInteractive(config, settings, prompt, promptId, {
     abortController,
