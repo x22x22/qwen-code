@@ -289,8 +289,8 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
           <Box flexDirection="row" marginTop={1}>
             <Text color={theme.text.secondary}>
               Execution Summary: {data.executionSummary.totalToolCalls} tool
-              uses ? {data.executionSummary.totalTokens.toLocaleString()} tokens
-              ? {fmtDuration(data.executionSummary.totalDurationMs)}
+              uses · {data.executionSummary.totalTokens.toLocaleString()} tokens
+              · {fmtDuration(data.executionSummary.totalDurationMs)}
             </Text>
           </Box>
         )}
@@ -317,7 +317,7 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
     hiddenCount > 0 ? (
       <Box paddingX={1}>
         <Text color={theme.text.secondary}>
-          ? {hiddenCount} sections hidden
+          ↑ {hiddenCount} sections hidden
         </Text>
       </Box>
     ) : null;
@@ -384,7 +384,7 @@ const StatusDot: React.FC<{
   status: TaskResultDisplay['status'];
 }> = ({ status }) => (
   <Box marginLeft={1} marginRight={1}>
-    <Text color={getStatusColor(status)}>?</Text>
+    <Text color={getStatusColor(status)}>●</Text>
   </Box>
 );
 
@@ -454,11 +454,11 @@ const ToolCallItem: React.FC<{
     const color = getStatusColor(toolCall.status);
     switch (toolCall.status) {
       case 'executing':
-        return <Text color={color}>?</Text>; // Using same as ToolMessage
+        return <Text color={color}>⊷</Text>; // Using same as ToolMessage
       case 'awaiting_approval':
         return <Text color={theme.status.warning}>?</Text>;
       case 'success':
-        return <Text color={color}>?</Text>;
+        return <Text color={color}>✓</Text>;
       case 'failed':
         return (
           <Text color={color} bold>
@@ -523,7 +523,7 @@ const ExecutionSummaryDetails: React.FC<{
   if (!stats) {
     return (
       <Box flexDirection="column" paddingLeft={1}>
-        <Text color={theme.text.secondary}>? No summary available</Text>
+        <Text color={theme.text.secondary}>• No summary available</Text>
       </Box>
     );
   }
@@ -531,13 +531,13 @@ const ExecutionSummaryDetails: React.FC<{
   return (
     <Box flexDirection="column" paddingLeft={1}>
       <Text>
-        ? <Text>Duration: {fmtDuration(stats.totalDurationMs)}</Text>
+        • <Text>Duration: {fmtDuration(stats.totalDurationMs)}</Text>
       </Text>
       <Text>
-        ? <Text>Rounds: {stats.rounds}</Text>
+        • <Text>Rounds: {stats.rounds}</Text>
       </Text>
       <Text>
-        ? <Text>Tokens: {stats.totalTokens.toLocaleString()}</Text>
+        • <Text>Tokens: {stats.totalTokens.toLocaleString()}</Text>
       </Text>
     </Box>
   );
@@ -552,7 +552,7 @@ const ToolUsageStats: React.FC<{
   if (!executionSummary) {
     return (
       <Box flexDirection="column" paddingLeft={1}>
-        <Text color={theme.text.secondary}>? No tool usage data available</Text>
+        <Text color={theme.text.secondary}>• No tool usage data available</Text>
       </Box>
     );
   }
@@ -560,10 +560,10 @@ const ToolUsageStats: React.FC<{
   return (
     <Box flexDirection="column" paddingLeft={1}>
       <Text>
-        ? <Text>Total Calls:</Text> {executionSummary.totalToolCalls}
+        • <Text>Total Calls:</Text> {executionSummary.totalToolCalls}
       </Text>
       <Text>
-        ? <Text>Success Rate:</Text>{' '}
+        • <Text>Success Rate:</Text>{' '}
         <Text color={theme.status.success}>
           {executionSummary.successRate.toFixed(1)}%
         </Text>{' '}
@@ -617,7 +617,7 @@ const ResultsSection: React.FC<{
     {/* Error reason for failed tasks */}
     {data.status === 'cancelled' && (
       <Box flexDirection="row">
-        <Text color={theme.status.warning}>? User Cancelled</Text>
+        <Text color={theme.status.warning}>⏹ User Cancelled</Text>
       </Box>
     )}
     {data.status === 'failed' && (
