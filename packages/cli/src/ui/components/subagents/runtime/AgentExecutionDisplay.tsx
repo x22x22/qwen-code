@@ -16,6 +16,7 @@ import { useKeypress } from '../../../hooks/useKeypress.js';
 import { COLOR_OPTIONS } from '../constants.js';
 import { fmtDuration } from '../utils.js';
 import { ToolConfirmationMessage } from '../../messages/ToolConfirmationMessage.js';
+import { ScrollView } from '../../shared/ScrollView.js';
 
 export type DisplayMode = 'compact' | 'default' | 'verbose';
 
@@ -88,20 +89,26 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
     return colorOption?.value || theme.text.accent;
   }, [data.subagentColor]);
 
+  const hasAdditionalPromptLines =
+    data.taskPrompt.split('\n').length > MAX_TASK_PROMPT_LINES;
+  const hasAdditionalToolCalls = !!(
+    data.toolCalls && data.toolCalls.length > MAX_TOOL_CALLS
+  );
+  const hasMoreDetail = hasAdditionalPromptLines || hasAdditionalToolCalls;
+
   const footerText = React.useMemo(() => {
     // This component only listens to keyboard shortcut events when the subagent is running
     if (data.status !== 'running') return '';
 
-    if (displayMode === 'default') {
-      const hasMoreLines =
-        data.taskPrompt.split('\n').length > MAX_TASK_PROMPT_LINES;
-      const hasMoreToolCalls =
-        data.toolCalls && data.toolCalls.length > MAX_TOOL_CALLS;
+    if (displayMode === 'compact') {
+      return 'Press ctrl+e to expand.';
+    }
 
-      if (hasMoreToolCalls || hasMoreLines) {
-        return 'Press ctrl+r to show less, ctrl+e to show more.';
+    if (displayMode === 'default') {
+      if (hasMoreDetail) {
+        return 'Press ctrl+e to show more.';
       }
-      return 'Press ctrl+r to show less.';
+      return 'Press ctrl+e to collapse.';
     }
 
     if (displayMode === 'verbose') {
@@ -109,25 +116,121 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
     }
 
     return '';
-  }, [displayMode, data]);
+  }, [displayMode, data.status, hasMoreDetail]);
 
   // Handle keyboard shortcuts to control display mode
   useKeypress(
     (key) => {
-      if (key.ctrl && key.name === 'r') {
-        // ctrl+r toggles between compact and default
-        setDisplayMode((current) =>
-          current === 'compact' ? 'default' : 'compact',
-        );
-      } else if (key.ctrl && key.name === 'e') {
+      if (key.ctrl && key.name === 'e') {
         // ctrl+e toggles between default and verbose
         setDisplayMode((current) =>
-          current === 'default' ? 'verbose' : 'default',
+          current === 'compact'
+            ? 'default'
+            : current === 'default'
+              ? hasMoreDetail
+                ? 'verbose'
+                : 'compact'
+              : 'default',
         );
       }
     },
     { isActive: true },
   );
+
+  const defaultModeSections = useMemo(() => {
+    if (displayMode === 'compact') {
+      return [] as React.ReactElement[];
+    }
+
+    const sections: React.ReactElement[] = [];
+
+    const addSection = (key: string, element: React.ReactNode) => {
+      sections.push(
+        <Box
+          key={key}
+          paddingX={1}
+          marginTop={sections.length === 0 ? 0 : 1}
+          flexDirection="column"
+        >
+          {element}
+        </Box>,
+      );
+    };
+
+    addSection(
+      'header',
+      <Box flexDirection="row">
+        <Text bold color={agentColor}>
+          {data.subagentName}
+        </Text>
+        <StatusDot status={data.status} />
+        <StatusIndicator status={data.status} />
+      </Box>,
+    );
+
+    addSection(
+      'task-prompt',
+      <TaskPromptSection
+        taskPrompt={data.taskPrompt}
+        displayMode={displayMode}
+      />,
+    );
+
+    if (
+      data.status === 'running' &&
+      data.toolCalls &&
+      data.toolCalls.length > 0
+    ) {
+      addSection(
+        'tool-calls',
+        <ToolCallsList toolCalls={data.toolCalls} displayMode={displayMode} />,
+      );
+    }
+
+    if (data.pendingConfirmation) {
+      addSection(
+        'confirmation',
+        <ToolConfirmationMessage
+          confirmationDetails={data.pendingConfirmation}
+          config={config}
+          isFocused={true}
+          availableTerminalHeight={availableHeight}
+          terminalWidth={childWidth}
+          compactMode={true}
+        />,
+      );
+    }
+
+    if (
+      data.status === 'completed' ||
+      data.status === 'failed' ||
+      data.status === 'cancelled'
+    ) {
+      addSection(
+        'results',
+        <ResultsSection data={data} displayMode={displayMode} />,
+      );
+    }
+
+    if (footerText) {
+      addSection(
+        'footer',
+        <Box flexDirection="row">
+          <Text color={theme.text.secondary}>{footerText}</Text>
+        </Box>,
+      );
+    }
+
+    return sections;
+  }, [
+    agentColor,
+    childWidth,
+    config,
+    data,
+    displayMode,
+    footerText,
+    availableHeight,
+  ]);
 
   if (displayMode === 'compact') {
     return (
@@ -186,8 +289,8 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
           <Box flexDirection="row" marginTop={1}>
             <Text color={theme.text.secondary}>
               Execution Summary: {data.executionSummary.totalToolCalls} tool
-              uses · {data.executionSummary.totalTokens.toLocaleString()} tokens
-              · {fmtDuration(data.executionSummary.totalDurationMs)}
+              uses ? {data.executionSummary.totalTokens.toLocaleString()} tokens
+              ? {fmtDuration(data.executionSummary.totalDurationMs)}
             </Text>
           </Box>
         )}
@@ -204,65 +307,36 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
     );
   }
 
-  // Default and verbose modes use normal layout
-  return (
-    <Box flexDirection="column" paddingX={1} gap={1}>
-      {/* Header with subagent name and status */}
-      <Box flexDirection="row">
-        <Text bold color={agentColor}>
-          {data.subagentName}
+  const overflowIndicator = (hiddenCount: number) =>
+    hiddenCount > 0 ? (
+      <Box paddingX={1}>
+        <Text color={theme.text.secondary}>
+          ↑ {hiddenCount} sections hidden
         </Text>
-        <StatusDot status={data.status} />
-        <StatusIndicator status={data.status} />
       </Box>
+    ) : null;
 
-      {/* Task description */}
-      <TaskPromptSection
-        taskPrompt={data.taskPrompt}
-        displayMode={displayMode}
+  if (availableHeight && availableHeight > 0) {
+    return (
+      <ScrollView<React.ReactElement>
+        height={availableHeight}
+        width={childWidth}
+        data={defaultModeSections}
+        stickTo="bottom"
+        renderItem={(item: React.ReactElement) => item}
+        getItemKey={(item, index: number) => {
+          const key = item.key;
+          if (typeof key === 'string' || typeof key === 'number') {
+            return key;
+          }
+          return index;
+        }}
+        renderOverflowIndicator={overflowIndicator}
       />
+    );
+  }
 
-      {/* Progress section for running tasks */}
-      {data.status === 'running' &&
-        data.toolCalls &&
-        data.toolCalls.length > 0 && (
-          <Box flexDirection="column">
-            <ToolCallsList
-              toolCalls={data.toolCalls}
-              displayMode={displayMode}
-            />
-          </Box>
-        )}
-
-      {/* Inline approval prompt when awaiting confirmation */}
-      {data.pendingConfirmation && (
-        <Box flexDirection="column">
-          <ToolConfirmationMessage
-            confirmationDetails={data.pendingConfirmation}
-            config={config}
-            isFocused={true}
-            availableTerminalHeight={availableHeight}
-            terminalWidth={childWidth}
-            compactMode={true}
-          />
-        </Box>
-      )}
-
-      {/* Results section for completed/failed tasks */}
-      {(data.status === 'completed' ||
-        data.status === 'failed' ||
-        data.status === 'cancelled') && (
-        <ResultsSection data={data} displayMode={displayMode} />
-      )}
-
-      {/* Footer with keyboard shortcuts */}
-      {footerText && (
-        <Box flexDirection="row">
-          <Text color={theme.text.secondary}>{footerText}</Text>
-        </Box>
-      )}
-    </Box>
-  );
+  return <Box flexDirection="column">{defaultModeSections}</Box>;
 };
 
 /**
@@ -304,7 +378,7 @@ const StatusDot: React.FC<{
   status: TaskResultDisplay['status'];
 }> = ({ status }) => (
   <Box marginLeft={1} marginRight={1}>
-    <Text color={getStatusColor(status)}>●</Text>
+    <Text color={getStatusColor(status)}>?</Text>
   </Box>
 );
 
@@ -374,11 +448,11 @@ const ToolCallItem: React.FC<{
     const color = getStatusColor(toolCall.status);
     switch (toolCall.status) {
       case 'executing':
-        return <Text color={color}>⊷</Text>; // Using same as ToolMessage
+        return <Text color={color}>?</Text>; // Using same as ToolMessage
       case 'awaiting_approval':
         return <Text color={theme.status.warning}>?</Text>;
       case 'success':
-        return <Text color={color}>✓</Text>;
+        return <Text color={color}>?</Text>;
       case 'failed':
         return (
           <Text color={color} bold>
@@ -443,7 +517,7 @@ const ExecutionSummaryDetails: React.FC<{
   if (!stats) {
     return (
       <Box flexDirection="column" paddingLeft={1}>
-        <Text color={theme.text.secondary}>• No summary available</Text>
+        <Text color={theme.text.secondary}>? No summary available</Text>
       </Box>
     );
   }
@@ -451,13 +525,13 @@ const ExecutionSummaryDetails: React.FC<{
   return (
     <Box flexDirection="column" paddingLeft={1}>
       <Text>
-        • <Text>Duration: {fmtDuration(stats.totalDurationMs)}</Text>
+        ? <Text>Duration: {fmtDuration(stats.totalDurationMs)}</Text>
       </Text>
       <Text>
-        • <Text>Rounds: {stats.rounds}</Text>
+        ? <Text>Rounds: {stats.rounds}</Text>
       </Text>
       <Text>
-        • <Text>Tokens: {stats.totalTokens.toLocaleString()}</Text>
+        ? <Text>Tokens: {stats.totalTokens.toLocaleString()}</Text>
       </Text>
     </Box>
   );
@@ -472,7 +546,7 @@ const ToolUsageStats: React.FC<{
   if (!executionSummary) {
     return (
       <Box flexDirection="column" paddingLeft={1}>
-        <Text color={theme.text.secondary}>• No tool usage data available</Text>
+        <Text color={theme.text.secondary}>? No tool usage data available</Text>
       </Box>
     );
   }
@@ -480,10 +554,10 @@ const ToolUsageStats: React.FC<{
   return (
     <Box flexDirection="column" paddingLeft={1}>
       <Text>
-        • <Text>Total Calls:</Text> {executionSummary.totalToolCalls}
+        ? <Text>Total Calls:</Text> {executionSummary.totalToolCalls}
       </Text>
       <Text>
-        • <Text>Success Rate:</Text>{' '}
+        ? <Text>Success Rate:</Text>{' '}
         <Text color={theme.status.success}>
           {executionSummary.successRate.toFixed(1)}%
         </Text>{' '}
@@ -537,7 +611,7 @@ const ResultsSection: React.FC<{
     {/* Error reason for failed tasks */}
     {data.status === 'cancelled' && (
       <Box flexDirection="row">
-        <Text color={theme.status.warning}>⏹ User Cancelled</Text>
+        <Text color={theme.status.warning}>? User Cancelled</Text>
       </Box>
     )}
     {data.status === 'failed' && (
