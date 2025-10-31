@@ -303,6 +303,12 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
             </Text>
           </Box>
         )}
+
+        {footerText && (
+          <Box flexDirection="row" marginTop={1}>
+            <Text color={theme.text.secondary}>{footerText}</Text>
+          </Box>
+        )}
       </Box>
     );
   }
@@ -311,7 +317,7 @@ export const AgentExecutionDisplay: React.FC<AgentExecutionDisplayProps> = ({
     hiddenCount > 0 ? (
       <Box paddingX={1}>
         <Text color={theme.text.secondary}>
-          ↑ {hiddenCount} sections hidden
+          ? {hiddenCount} sections hidden
         </Text>
       </Box>
     ) : null;
